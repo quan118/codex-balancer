@@ -20,7 +20,7 @@ const (
 	affinityFile         affinityKind = "file"
 )
 
-const noAccountAvailableMessage = "WE ARE OUT OF TOKENS 😭\nGo out, touch some grass 🌿\nSee http://127.0.0.1:8317/dashboard"
+const noAccountAvailableMessage = "WE ARE OUT OF TOKENS 😭 Go out, touch some grass 🌿 See http://127.0.0.1:8317/dashboard"
 
 var (
 	errAffinityConflict         = errors.New("affinity owners conflict")
