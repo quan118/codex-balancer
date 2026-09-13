@@ -152,10 +152,13 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /stats", s.statsJSON)
 	// pi's Codex provider appends /codex/responses to its configured base URL.
 	responses := s.admitted(s.responsesWebSocket)
+	httpResponses := s.observedResponses(s.admitted(s.responsesHTTP))
+	methodRejected := s.observedResponses(http.HandlerFunc(s.responsesMethodNotAllowed))
 	for _, path := range []string{"/v1/responses", "/codex/responses", "/v1/codex/responses"} {
 		mux.Handle("GET "+path, responses)
+		mux.Handle("POST "+path, httpResponses)
+		mux.Handle(path, methodRejected)
 	}
-	mux.Handle("POST /v1/responses", s.observedResponses(s.admitted(s.responsesHTTP)))
 	mux.HandleFunc("GET /v1/models", s.models)
 	return mux
 }

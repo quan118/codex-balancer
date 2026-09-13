@@ -16,29 +16,33 @@ import (
 )
 
 type responsesWebSocketRelay struct {
-	server         *server
-	downstream     responsesDownstream
-	request        *http.Request
-	apiKey         apiKeyIdentity
-	route          websocketRoute
-	thread         string
-	ctx            context.Context
-	cancel         context.CancelFunc
-	messages       chan websocketMessage
-	readers        []<-chan struct{}
-	invalidations  chan websocketInvalidation
-	liveThreads    map[string]struct{}
-	current        *websocketDial
-	turns          []websocketTurn
-	pending        []websocketMessage
-	pendingBytes   int
-	pinned         bool
-	socketID       uint64
-	fastMode       fastMode
-	policyChanged  <-chan struct{}
-	idleTimeout    time.Duration
-	messageLimit   int64
-	generationSpan trace.Span
+	server                *server
+	downstream            responsesDownstream
+	request               *http.Request
+	apiKey                apiKeyIdentity
+	route                 websocketRoute
+	thread                string
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	messages              chan websocketMessage
+	readers               []<-chan struct{}
+	invalidations         chan websocketInvalidation
+	liveThreads           map[string]struct{}
+	current               *websocketDial
+	turns                 []websocketTurn
+	pending               []websocketMessage
+	pendingBytes          int
+	pinned                bool
+	socketID              uint64
+	fastMode              fastMode
+	policyChanged         <-chan struct{}
+	idleTimeout           time.Duration
+	messageLimit          int64
+	generationSpan        trace.Span
+	upstreamOpened        time.Time
+	lastUpstreamEvent     time.Time
+	lastUpstreamKind      string
+	receivedUpstreamBytes int64
 }
 
 type websocketInvalidation struct {
@@ -54,21 +58,22 @@ func newResponsesWebSocketRelay(s *server, downstream responsesDownstream, reque
 		cancel = func() { stop(); cancelContext() }
 	}
 	return &responsesWebSocketRelay{
-		server:        s,
-		messageLimit:  maxWebSocketMessage,
-		fastMode:      mode,
-		policyChanged: changed,
-		downstream:    downstream,
-		request:       request,
-		apiKey:        apiKey,
-		route:         route,
-		thread:        route.key(),
-		ctx:           ctx,
-		cancel:        cancel,
-		messages:      make(chan websocketMessage, 8),
-		invalidations: make(chan websocketInvalidation, 4),
-		liveThreads:   map[string]struct{}{},
-		current:       initial,
+		server:         s,
+		messageLimit:   maxWebSocketMessage,
+		fastMode:       mode,
+		policyChanged:  changed,
+		downstream:     downstream,
+		request:        request,
+		apiKey:         apiKey,
+		route:          route,
+		thread:         route.key(),
+		ctx:            ctx,
+		cancel:         cancel,
+		messages:       make(chan websocketMessage, 8),
+		invalidations:  make(chan websocketInvalidation, 4),
+		liveThreads:    map[string]struct{}{},
+		current:        initial,
+		upstreamOpened: time.Now(),
 	}
 }
 
@@ -179,6 +184,10 @@ func (r *responsesWebSocketRelay) switchAccount(next *websocketDial, model, serv
 	previous.conn.CloseNow()
 	r.server.websocketClosed(r.thread, previous.account)
 	r.current = next
+	r.upstreamOpened = time.Now()
+	r.lastUpstreamEvent = time.Time{}
+	r.lastUpstreamKind = ""
+	r.receivedUpstreamBytes = 0
 	if !r.server.activeWebSockets.move(r.socketID, previous.account.id(), r.current.account.id()) {
 		r.socketID = r.registerActiveSocket(r.current.account.id())
 	}
@@ -213,6 +222,7 @@ func (r *responsesWebSocketRelay) writeUpstream(message websocketMessage) bool {
 	observed.event(r.ctx, "upstream_write_started", attribute.String("account", r.current.account.id()), attribute.Int("bytes", len(message.data)), attribute.String("replay_owner_after_write_attempt", "client"))
 	started := time.Now()
 	if err := r.current.conn.Write(ctx, message.kind, message.data); err != nil {
+		r.logUpstreamFailure(err, "write", len(message.data))
 		observed.event(r.ctx, "upstream_write_failed", attribute.String("error_type", telemetryErrorClass(err)), attribute.Bool("possibly_transmitted", true))
 		r.closeDownstream(websocket.StatusServiceRestart, "upstream websocket unavailable")
 		return false
@@ -366,10 +376,14 @@ func (r *responsesWebSocketRelay) startTurn(event websocketEnvelope) {
 
 func (r *responsesWebSocketRelay) handleUpstream(message websocketMessage) bool {
 	if message.err != nil {
+		r.logUpstreamFailure(message.err, "read", len(message.data))
 		observation(r.ctx).event(r.ctx, "upstream_closed", attribute.String("error_type", telemetryErrorClass(message.err)), attribute.Int("close_status", int(websocket.CloseStatus(message.err))))
 		r.closeDownstream(websocket.StatusServiceRestart, "upstream websocket unavailable")
 		return false
 	}
+	r.lastUpstreamEvent = time.Now()
+	r.receivedUpstreamBytes += int64(len(message.data))
+	r.lastUpstreamKind = "invalid_frame"
 	var err error
 	message, err = r.downstream.prepare(message)
 	if err != nil {
@@ -379,6 +393,9 @@ func (r *responsesWebSocketRelay) handleUpstream(message websocketMessage) bool 
 	var event websocketEnvelope
 	rejection := websocketRejectionNone
 	parsed := message.kind == websocket.MessageText && json.Unmarshal(message.data, &event) == nil
+	if parsed {
+		r.lastUpstreamKind = websocketDiagnosticEvent(event.Type)
+	}
 	if parsed && websocketRejection(event) == websocketRejectionUnauthorized {
 		r.handleInBandUnauthorized()
 		r.downstream.reject(r.ctx, message, websocket.StatusServiceRestart, "account rejected websocket request")

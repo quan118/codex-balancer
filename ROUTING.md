@@ -17,10 +17,10 @@ Codex CLI sets the lifecycle that the balancer matches:
   `previous_response_id` state and sends full input. Codex replays the request.
   The balancer closes the socket and waits for the client.
 
-Inference uses upstream WebSockets. Clients can use `GET /v1/responses`
-(and the GET aliases `/codex/responses`, `/v1/codex/responses`) or stateless
-HTTP `POST /v1/responses`. Both transports use the same relay and account
-routing policy; there is no account-specific route.
+Inference uses upstream WebSockets. Clients can use WebSocket GET or stateless
+HTTP POST at `/v1/responses`, `/codex/responses` and `/v1/codex/responses`. All
+three paths share the same adapters, admission gate and account-routing policy;
+there is no account-specific route.
 
 ## Fresh placement
 
@@ -330,6 +330,11 @@ balancer does not add a second reconnect path.
 ## HTTP execution and errors
 
 HTTP adapts one request to one upstream WebSocket and one `response.create`.
+The Codex POST aliases support pi's session-sticky SSE fallback after a WebSocket
+failure. An already-started generation remains failed; only the client's next
+request supplies full history for another generation. A transport failure alone
+neither marks an account spent nor moves a healthy accepted owner.
+
 It does not relay through a public endpoint, share a busy conversation socket,
 or replay an in-flight generation. SSE and JSON are downstream serializers;
 account setup, provisional claims, first-turn model checks, acceptance at
@@ -368,7 +373,9 @@ still cannot move accounts, in either handshake headers or client metadata.
 | Missing/invalid/revoked client key | 401 JSON error | Authentication is checked once on entry. |
 | Admission full or draining, no eligible route/retained owner | 503 JSON error, retry hint | Not newly admitted. |
 | Invalid JSON/types/controls or persistence/continuation request | 400 JSON error | Rejected before inference. |
-| Body too large / unsupported encoding or content type | 413 / 415 JSON error | Rejected before inference. |
+| Wire/decoded body or zstd window too large | 413 JSON error | Rejected before inference. |
+| Invalid compressed body | 400 JSON error | Rejected before inference. |
+| Unsupported/stacked encoding or content type | 415 JSON error | Rejected before inference. |
 | `response.completed` | 200 Responses object or SSE | Forward terminal once, then `[DONE]`, close. |
 | Legacy `response.done` | Normalize to `response.completed` for HTTP only | Same terminal handling. |
 | Valid `response.incomplete` | 200, preserve status, partial output, details and any usage | Forward incomplete once, then `[DONE]`, close; not a transport failure. |
@@ -393,6 +400,11 @@ usage-limit recovery), HTTP clients instead receive the original typed failure.
 Once any SSE event is flushed, the adapter never attempts another HTTP status or
 appends a plain JSON error body. Unknown valid events are forwarded as events;
 normal terminal handling closes promptly even if upstream leaves the socket open.
+
+Identity and zstd requests have separate 8 MiB wire/decoded limits. The zstd
+window is capped at 8 MiB, checksums are verified, and trailing malformed data is
+not ignored. Decoding is single-worker/synchronous with context checks between
+reader calls; no asynchronous decoder worker can outlive the request.
 
 Limits are 30 seconds to read the body, 90 seconds per upstream handshake/write
 or idle event wait, and 30 seconds per downstream write/flush. Write deadlines

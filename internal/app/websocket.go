@@ -169,10 +169,11 @@ type websocketEnvelope struct {
 func (s *server) responsesWebSocket(w http.ResponseWriter, r *http.Request) {
 	apiKey, authorized := s.authorizeAPIKey(r)
 	if !authorized {
+		s.logResponseRejection(w, r, http.StatusUnauthorized, "invalid_bearer_key")
 		writeError(w, http.StatusUnauthorized, "missing or invalid bearer key")
 		return
 	}
-	if !websocketHandshake(w, r) {
+	if !s.websocketHandshake(w, r) {
 		return
 	}
 
@@ -186,10 +187,12 @@ func (s *server) responsesWebSocket(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errNoAccountAvailable) {
 			message = noAccountAvailableMessage
 		}
+		s.logResponseRejection(w, r, http.StatusServiceUnavailable, "upstream_setup_failed")
 		writeError(w, http.StatusServiceUnavailable, message)
 		return
 	}
 	if failed != nil {
+		s.logResponseRejection(w, r, failed.StatusCode, "upstream_handshake_rejected")
 		copyWebSocketHeaders(w.Header(), failed.Header)
 		w.WriteHeader(failed.StatusCode)
 		if failed.Body != nil {
@@ -214,18 +217,21 @@ func (s *server) responsesWebSocket(w http.ResponseWriter, r *http.Request) {
 	newResponsesWebSocketRelay(s, websocketDownstream{downstream}, r, dial, route, apiKey, mode, changed).run()
 }
 
-func websocketHandshake(w http.ResponseWriter, r *http.Request) bool {
+func (s *server) websocketHandshake(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		s.logResponseRejection(w, r, http.StatusMethodNotAllowed, "websocket_upgrade_required")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return false
 	}
 	if !headerHasToken(r.Header, "Connection", "upgrade") {
+		s.logResponseRejection(w, r, http.StatusUpgradeRequired, "connection_upgrade_required")
 		w.Header().Set("Connection", "Upgrade")
 		w.Header().Set("Upgrade", "websocket")
 		w.WriteHeader(http.StatusUpgradeRequired)
 		return false
 	}
 	if r.Header.Get("Sec-WebSocket-Version") != "13" || r.Header.Get("Sec-WebSocket-Key") == "" {
+		s.logResponseRejection(w, r, http.StatusBadRequest, "invalid_websocket_handshake")
 		http.Error(w, "invalid websocket handshake", http.StatusBadRequest)
 		return false
 	}

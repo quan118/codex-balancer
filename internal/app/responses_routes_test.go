@@ -23,7 +23,7 @@ func TestResponsesRoutesGuards(t *testing.T) {
 				gate   *admissionGate
 				want   int
 			}{
-				{name: "POST is not supported", method: http.MethodPost, key: "balancer-key", want: http.StatusMethodNotAllowed},
+				{name: "POST requires JSON body", method: http.MethodPost, key: "balancer-key", want: http.StatusBadRequest},
 				{name: "GET requires upgrade", method: http.MethodGet, key: "balancer-key", want: http.StatusMethodNotAllowed},
 				{name: "missing key", method: http.MethodGet, want: http.StatusUnauthorized},
 				{name: "invalid key", method: http.MethodGet, key: "wrong", want: http.StatusUnauthorized},
@@ -31,9 +31,6 @@ func TestResponsesRoutesGuards(t *testing.T) {
 				{name: "draining", method: http.MethodGet, key: "balancer-key", gate: &admissionGate{limit: 1, draining: true}, want: http.StatusServiceUnavailable},
 			} {
 				t.Run(test.name, func(t *testing.T) {
-					if path == "/v1/responses" && test.method == http.MethodPost {
-						test.want = http.StatusBadRequest // POST exists, but this request has no JSON body.
-					}
 					srv := &server{
 						admission: test.gate,
 						lookupAPIKey: func(key string) (string, bool, error) {

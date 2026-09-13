@@ -24,7 +24,7 @@ codex-balancer server           # serve the proxy with a TUI at
 The server runs at http://127.0.0.1:8317
 
 - `/v1/responses` — HTTP `POST` (SSE or JSON) and WebSocket `GET`
-- `/codex/responses` and `/v1/codex/responses` — WebSocket `GET` aliases for pi
+- `/codex/responses` and `/v1/codex/responses` — equivalent HTTP `POST` and WebSocket `GET` aliases for pi
 - `/dashboard` — HTML dashboard
 - `/stats` — JSON stats of the server
 - `/accounts` — add an account. On a real server, send this to your friends so they join the pool without exposing credentials.
@@ -132,12 +132,15 @@ Then start pi and select a model your pool supports:
 pi --provider openai-codex --model gpt-5.6-sol
 ```
 
-Or use `/model` and choose an `openai-codex` model. Leave `transport` at `"auto"`
-(the default), which tries WebSockets first. If you previously set it to `"sse"`
-in `~/.pi/agent/settings.json` or `.pi/settings.json`, change it to `"auto"`.
-HTTP Responses is supported at `POST /v1/responses`, not at the Codex aliases.
-Pi's Codex SSE fallback uses those aliases, which remain GET-only; keep this
-provider on `"auto"` rather than forcing `"sse"`.
+Or use `/model` and choose an `openai-codex` model. Keep `transport` at `"auto"`
+(the default) to use WebSockets and connection-scoped continuation when possible.
+Pi's HTTP/SSE fallback is also supported at both Codex aliases, including its
+`zstd`-compressed request bodies. No client patch or transport workaround is needed.
+
+An interrupted, already-streaming turn can still report a WebSocket error. Pi may
+then keep that session on HTTP fallback. The next attempt sends full history and
+can succeed without restarting pi; the balancer does not replay an interrupted
+generation itself. The same account-affinity and portable-history rules apply.
 
 This redirects **all** `openai-codex` models through the balancer. When migrating
 from a custom `balancer` provider, remove its old block and update any saved
@@ -181,7 +184,8 @@ does not make every catalog model routable or reconcile catalog limits.
 
 ### HTTP Responses contract
 
-`POST /v1/responses` accepts a JSON object with a non-empty string `model`.
+`POST /v1/responses`, `/codex/responses` and `/v1/codex/responses` share one
+HTTP adapter and accept a JSON object with a non-empty string `model`.
 `stream:true` returns incrementally flushed Responses SSE events; omitted or
 false returns a Responses JSON object. Each request has its own upstream Codex
 WebSocket, including overlapping conversation and title requests.
@@ -206,8 +210,11 @@ controls. OpenCode's chat hook removes its output-token limit, but auxiliary
 paths can bypass that hook. Unknown fields are not guessed away or retried with
 different payloads; upstream rejects unsupported semantics normally.
 
-Requests are limited to 8 MiB. Compressed bodies are rejected with 415. JSON
-retention and upstream frames are bounded to 16 MiB; oversized/unfinished output
+Both the wire request body and decoded JSON are limited to 8 MiB. HTTP accepts
+identity (uncompressed) and `zstd` encoding; the zstd decoder window is also
+limited to 8 MiB. Oversized bodies/windows return 413; malformed compressed data
+returns 400. Other or stacked encodings return 415. JSON retention and upstream
+frames are bounded to 16 MiB; oversized/unfinished output
 fails rather than returning truncated success. JSON uses non-empty terminal
 output, otherwise complete `response.output_item.done` items ordered by
 `output_index`. Empty output with no item events remains empty; unfinished items
@@ -243,6 +250,23 @@ CODEX_BALANCER_TEST_SDK="$sdk_dir" go test ./internal/app -run TestHTTPResponses
 The test isolates HOME/XDG state and restricts inference fetches to its local
 balancer. It does not install plugins, load personal credentials, or discover
 models over the network.
+
+### Pi fallback verification
+
+An opt-in test runs the checkout's actual Codex adapter against local HTTP/WS
+servers, using synthetic credentials and isolated HOME/XDG state. It checks a
+cached incremental WebSocket turn, interruption after partial output, compressed
+full-history HTTP fallback, and repeated HTTP continuation on the retained owner:
+
+```sh
+CODEX_BALANCER_TEST_PI=/path/to/pi go test ./internal/app -run TestPiWebSocketToHTTPFallback -count=1 -v
+```
+
+The checkout needs installed dependencies and a Node runtime with native
+WebSocket headers and zstd support (verified with Node 26.3.0). The test reads pi
+source without editing it, blocks non-local fetch/WebSocket URLs, and does not
+load the full application, personal auth, plugins or network discovery. It tests
+the real client adapter against a synthetic upstream, not live Codex inference.
 
 ## Observability
 

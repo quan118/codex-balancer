@@ -72,7 +72,8 @@ func (s *server) observedResponses(next http.Handler) http.Handler {
 			incoming = trace.NewSpanContext(trace.SpanContextConfig{TraceID: incoming.TraceID(), SpanID: incoming.SpanID(), TraceFlags: incoming.TraceFlags(), Remote: true})
 			opts = append(opts, trace.WithLinks(trace.Link{SpanContext: incoming}))
 		}
-		ctx, span := s.responseTracer().Start(r.Context(), "POST /v1/responses", opts...)
+		method, path := responseLogRoute(r)
+		ctx, span := s.responseTracer().Start(r.Context(), method+" "+path, opts...)
 		t := &responseObservation{server: s, ctx: ctx, root: span, id: rand.Text(), started: time.Now(), outcome: "unfinished"}
 		t.secrets = append(t.secrets, r.Header.Get("Authorization"), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		t.rebuildRedactor()
@@ -88,7 +89,7 @@ func (s *server) observedResponses(next http.Handler) http.Handler {
 			kind = "thread"
 		}
 		attrs := []attribute.KeyValue{
-			attribute.String("request_id", t.id), attribute.String("http.request.method", "POST"), attribute.String("http.route", "/v1/responses"),
+			attribute.String("request_id", t.id), attribute.String("http.request.method", method), attribute.String("http.route", path),
 			attribute.String("affinity", kind), attribute.String("session_hash", t.fingerprint("session", []byte(route.session))),
 			attribute.String("thread_hash", t.fingerprint("thread", []byte(route.thread))), attribute.Int64("content_length", r.ContentLength),
 			attribute.Bool("turn_state_header_present", strings.TrimSpace(r.Header.Get(codexTurnStateKey)) != ""),
@@ -147,10 +148,14 @@ func (t *responseObservation) rebuildRedactor() {
 }
 
 func (t *responseObservation) fingerprint(domain string, data []byte) string {
+	return t.server.logFingerprint(domain, data)
+}
+
+func (s *server) logFingerprint(domain string, data []byte) string {
 	if len(data) == 0 {
 		return "absent"
 	}
-	keys := &t.server.responseLogKeys
+	keys := &s.responseLogKeys
 	keys.once.Do(func() { _, _ = rand.Read(keys.key[:]) })
 	hash := hmac.New(sha256.New, keys.key[:])
 	hash.Write([]byte(domain))

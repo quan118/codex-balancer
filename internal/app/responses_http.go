@@ -57,10 +57,11 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 		// Leave deadlines active through net/http's final buffered write/body
 		// close. The server resets them for subsequent requests.
 	}()
-	if encoding := request.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+	encoding, supported := responseContentEncoding(request.Header)
+	if !supported {
 		observed.reject(ctx, http.StatusUnsupportedMediaType, "unsupported_encoding")
 		w.Header().Set("Connection", "close")
-		writeHTTPResponseError(w, http.StatusUnsupportedMediaType, "compressed request bodies are unsupported")
+		writeHTTPResponseError(w, http.StatusUnsupportedMediaType, "Content-Encoding must be identity or zstd")
 		return
 	}
 	if contentType := request.Header.Get("Content-Type"); contentType != "" {
@@ -72,22 +73,17 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 			return
 		}
 	}
-	body := http.MaxBytesReader(w, request.Body, maxHTTPResponseBody)
-	defer body.Close()
 	readCtx, readSpan := s.responseTracer().Start(ctx, "http.request.read")
 	readStarted := time.Now()
-	data, err := io.ReadAll(body)
+	data, wireBytes, err := readResponseBody(ctx, w, request, encoding)
 	spanFailure(readSpan, err)
-	observed.event(readCtx, "body_read", attribute.Int("body_bytes", len(data)), attribute.Int64("elapsed_ms", time.Since(readStarted).Milliseconds()), attribute.String("error_type", telemetryErrorClass(err)))
+	observed.event(readCtx, "body_read", attribute.String("content_encoding", encoding), attribute.Int("wire_bytes", wireBytes), attribute.Int("body_bytes", len(data)), attribute.Int64("elapsed_ms", time.Since(readStarted).Milliseconds()), attribute.String("error_type", telemetryErrorClass(err)))
 	readSpan.End()
 	if err != nil {
-		status := http.StatusBadRequest
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			status = http.StatusRequestEntityTooLarge
-		}
+		status := responseBodyStatus(err)
 		observed.reject(ctx, status, "body_read_failed")
-		writeHTTPResponseError(w, status, "could not read request body within size/time limit")
+		w.Header().Set("Connection", "close")
+		writeHTTPResponseError(w, status, "could not read/decode request body within size/time limits")
 		return
 	}
 	controller.SetReadDeadline(time.Time{})

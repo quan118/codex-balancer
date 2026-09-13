@@ -1,8 +1,9 @@
 # HTTP Responses logs and traces
 
-`POST /v1/responses` emits correlated structured logs without requiring a
-collector. Optional OpenTelemetry tracing exports the same request lifecycle via
-OTLP HTTP. Observability does not select accounts, replay inference, or change
+HTTP POST at `/v1/responses`, `/codex/responses` and `/v1/codex/responses`
+emits correlated structured logs without requiring a collector. Optional
+OpenTelemetry tracing exports the same request lifecycle via OTLP HTTP.
+Observability does not select accounts, replay inference, or change
 cache/ownership policy.
 
 ## Enable logs and optional tracing
@@ -53,7 +54,9 @@ logs; logging-only mode always has `request_id`.
 
 ## What to follow
 
-A typical request has these spans:
+Span names and `http.route` identify the actual supported path, including pi's
+Codex aliases. Arbitrary query strings are not recorded. A typical request has
+these spans:
 
 ```text
 POST /v1/responses
@@ -81,7 +84,8 @@ Useful request stages:
 
 | Stage | What it establishes |
 | --- | --- |
-| `admission`, `authorization`, `body_read` | Whether work was admitted/authenticated and body-read latency/size. Rejections are logged before upstream setup. |
+| `admission`, `authorization`, `body_read` | Admission/authentication, content encoding, wire/decoded sizes and read latency. Rejections are logged before upstream setup. |
+| `method_not_allowed`, `rejected` | Unsupported methods on the three Responses paths, including requests rejected before admission/inference. |
 | `normalized` | Model, requested/effective tier, fast-mode policy, input/tool counts, reasoning/tool replay counts and private prefix fingerprints. |
 | `route_selected`, `routing_candidate` | Selected/prior/blocked owner, routing reason, provisional claim/join and candidate quota/priority state. Selection is not response acceptance. |
 | `handshake_started`, `handshake_finished`, `upstream_ready` | Setup latency and status; still no `response.created`. |
@@ -104,6 +108,28 @@ For a client-reported request ID:
 ```sh
 jq 'select(.msg == "http responses" and .request_id == "REQUEST_ID")' server.log
 ```
+
+## Diagnosing a pi fallback failure
+
+A sequence of `1012 upstream websocket unavailable` followed by repeated 405s
+used to mean pi had switched to HTTP on a GET-only alias. Both POST aliases now
+use the HTTP adapter and accept bounded zstd bodies, so they produce ordinary
+request logs and can continue without clearing pi's fallback state.
+
+Unsupported methods on these three exact paths are explicitly logged, with an
+`Allow: GET, HEAD, POST` response and a correlation ID. GET requests missing the
+WebSocket upgrade (or rejected during auth/handshake) use
+`msg="responses request rejected"`, with method, path, status and a safe reason.
+This does not add an access logger for unrelated application routes.
+
+`msg="upstream websocket failure"` now covers legacy GET clients as well as HTTP
+executions. It records read/write phase, error class (EOF, timeout, reset, close,
+etc.), close status, connection age, time since the last event, a known event
+category, pending/accepted turn counts and frame/read-limit byte counts. Session
+and thread hashes correlate the failure with later HTTP fallback in the same
+process. Raw error text and upstream close reasons are never logged. A close
+code or elapsed time is evidence to investigate, not proof of quota exhaustion;
+this diagnostic does not initiate replay or change account selection.
 
 ## Checking safe account switches and caching
 
