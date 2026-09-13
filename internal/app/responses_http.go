@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -23,12 +25,16 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 	controller := http.NewResponseController(w)
 	controller.SetReadDeadline(time.Now().Add(httpResponseIOWait))
 	apiKey, authorized := s.authorizeAPIKey(request)
+	observed := observation(request.Context())
+	observed.event(request.Context(), "authorization", attribute.Bool("authorized", authorized), attribute.Bool("auth_required", s.lookupAPIKey != nil))
 	if !authorized {
+		observed.reject(request.Context(), http.StatusUnauthorized, "invalid_bearer_key")
 		// Do not let net/http drain a body the rejected client has not sent.
 		w.Header().Set("Connection", "close")
 		writeHTTPResponseError(w, http.StatusUnauthorized, "missing or invalid bearer key")
 		return
 	}
+	observed.rememberPool() // never inspect pool credentials for rejected admission/auth
 	ctx, cancel := context.WithCancel(request.Context())
 	defer cancel()
 	if s.ctx != nil {
@@ -52,6 +58,7 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 		// close. The server resets them for subsequent requests.
 	}()
 	if encoding := request.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		observed.reject(ctx, http.StatusUnsupportedMediaType, "unsupported_encoding")
 		w.Header().Set("Connection", "close")
 		writeHTTPResponseError(w, http.StatusUnsupportedMediaType, "compressed request bodies are unsupported")
 		return
@@ -59,6 +66,7 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 	if contentType := request.Header.Get("Content-Type"); contentType != "" {
 		mediaType, _, err := mime.ParseMediaType(contentType)
 		if err != nil || mediaType != "application/json" {
+			observed.reject(ctx, http.StatusUnsupportedMediaType, "unsupported_content_type")
 			w.Header().Set("Connection", "close")
 			writeHTTPResponseError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 			return
@@ -66,30 +74,43 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 	}
 	body := http.MaxBytesReader(w, request.Body, maxHTTPResponseBody)
 	defer body.Close()
+	readCtx, readSpan := s.responseTracer().Start(ctx, "http.request.read")
+	readStarted := time.Now()
 	data, err := io.ReadAll(body)
+	spanFailure(readSpan, err)
+	observed.event(readCtx, "body_read", attribute.Int("body_bytes", len(data)), attribute.Int64("elapsed_ms", time.Since(readStarted).Milliseconds()), attribute.String("error_type", telemetryErrorClass(err)))
+	readSpan.End()
 	if err != nil {
 		status := http.StatusBadRequest
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			status = http.StatusRequestEntityTooLarge
 		}
+		observed.reject(ctx, status, "body_read_failed")
 		writeHTTPResponseError(w, status, "could not read request body within size/time limit")
 		return
 	}
 	controller.SetReadDeadline(time.Time{})
+	_, translationSpan := s.responseTracer().Start(ctx, "codex.request.translate")
 	data, stream, err := translateHTTPResponse(data)
+	spanFailure(translationSpan, err)
+	translationSpan.End()
 	if err != nil {
+		observed.reject(ctx, http.StatusBadRequest, "request_translation_failed")
 		writeHTTPResponseError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	mode, changed := s.fastMode.snapshot()
 	var event websocketEnvelope
 	json.Unmarshal(data, &event)
+	requestedTier := event.ServiceTier
 	data, event.ServiceTier, err = mode.override(data, event.ServiceTier)
 	if err != nil {
+		observed.reject(ctx, http.StatusInternalServerError, "fast_mode_override_failed")
 		writeHTTPResponseError(w, http.StatusInternalServerError, "could not apply fast mode")
 		return
 	}
+	observed.normalized(data, event, stream, mode, requestedTier)
 	peer := &httpResponsesDownstream{
 		writer: w, controller: controller, request: data, stream: stream, ctx: ctx,
 		items: map[int]json.RawMessage{}, pending: map[int]bool{},
@@ -185,12 +206,15 @@ func (d *httpResponsesDownstream) Read(ctx context.Context) (websocket.MessageTy
 
 func (d *httpResponsesDownstream) prepare(message websocketMessage) (websocketMessage, error) {
 	if message.kind != websocket.MessageText {
+		observation(d.ctx).event(d.ctx, "invalid_upstream_frame", attribute.Int("bytes", len(message.data)), attribute.String("reason", "binary"))
 		return message, errors.New("binary upstream frame")
 	}
 	fields, err := responseObject(message.data)
 	if err != nil {
+		observation(d.ctx).event(d.ctx, "invalid_upstream_frame", attribute.Int("bytes", len(message.data)), attribute.String("reason", "invalid_json"))
 		return message, err
 	}
+	observation(d.ctx).received(d.ctx, fields, len(message.data))
 	kind, ok := responseString(fields["type"])
 	if !ok || kind == "" || strings.ContainsAny(kind, "\r\n\x00") {
 		return message, errors.New("invalid event type")
@@ -232,7 +256,8 @@ func (d *httpResponsesDownstream) prepare(message websocketMessage) (websocketMe
 	return message, err
 }
 
-func (d *httpResponsesDownstream) Write(_ context.Context, _ websocket.MessageType, data []byte) error {
+func (d *httpResponsesDownstream) Write(ctx context.Context, _ websocket.MessageType, data []byte) (err error) {
+	defer func() { observation(ctx).delivery(ctx, err, d.committed) }()
 	fields, _ := responseObject(data) // validated by prepare before accounting
 	kind, _ := responseString(fields["type"])
 	if !d.committed {
@@ -243,8 +268,12 @@ func (d *httpResponsesDownstream) Write(_ context.Context, _ websocket.MessageTy
 	delete(fields, "headers") // observed by the relay, never part of HTTP output
 	terminal := kind == "response.completed" || kind == "response.incomplete" || kind == "response.failed" || kind == "error"
 	failed := kind == "error" || kind == "response.failed"
-	if failed && !d.committed {
-		return d.fail(responseFailure(fields, 0))
+	if failed {
+		failure := responseFailure(fields, 0)
+		if !d.committed {
+			return d.fail(failure)
+		}
+		observation(ctx).failure(ctx, failure.Status, failure.Code, true)
 	}
 	if kind == "error" {
 		failure := responseFailure(fields, 0)
@@ -256,6 +285,14 @@ func (d *httpResponsesDownstream) Write(_ context.Context, _ websocket.MessageTy
 		if err := d.writeEvent(fields); err != nil {
 			d.finished = true
 			return err
+		}
+		if observed := observation(ctx); observed != nil {
+			observed.forwarded++
+			observed.status, observed.sseCommitted = 200, d.committed
+			observed.emit(ctx, slog.LevelDebug, "downstream_event", false, attribute.String("event_type", kind))
+			if terminal {
+				observed.terminal(ctx, kind, fields)
+			}
 		}
 		if terminal {
 			d.finished = true
@@ -275,6 +312,11 @@ func (d *httpResponsesDownstream) Write(_ context.Context, _ websocket.MessageTy
 			return d.fail(httpResponseFailure{Status: 502, Code: "invalid_upstream_output", Message: err.Error()})
 		}
 		d.finished = true
+		if observed := observation(ctx); observed != nil {
+			observed.status = 200
+			observed.terminal(ctx, kind, fields)
+			observed.event(ctx, "json_response", attribute.Int("response_bytes", len(response)), attribute.Int("retained_items", len(d.items)), attribute.Int("retained_bytes", d.itemBytes+d.createdBytes))
+		}
 		response = d.redact(response)
 		d.writeDeadline()
 		d.writer.Header().Set("Content-Type", "application/json")

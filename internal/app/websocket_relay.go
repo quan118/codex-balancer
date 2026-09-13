@@ -10,31 +10,35 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type responsesWebSocketRelay struct {
-	server        *server
-	downstream    responsesDownstream
-	request       *http.Request
-	apiKey        apiKeyIdentity
-	route         websocketRoute
-	thread        string
-	ctx           context.Context
-	cancel        context.CancelFunc
-	messages      chan websocketMessage
-	readers       []<-chan struct{}
-	invalidations chan websocketInvalidation
-	liveThreads   map[string]struct{}
-	current       *websocketDial
-	turns         []websocketTurn
-	pending       []websocketMessage
-	pendingBytes  int
-	pinned        bool
-	socketID      uint64
-	fastMode      fastMode
-	policyChanged <-chan struct{}
-	idleTimeout   time.Duration
-	messageLimit  int64
+	server         *server
+	downstream     responsesDownstream
+	request        *http.Request
+	apiKey         apiKeyIdentity
+	route          websocketRoute
+	thread         string
+	ctx            context.Context
+	cancel         context.CancelFunc
+	messages       chan websocketMessage
+	readers        []<-chan struct{}
+	invalidations  chan websocketInvalidation
+	liveThreads    map[string]struct{}
+	current        *websocketDial
+	turns          []websocketTurn
+	pending        []websocketMessage
+	pendingBytes   int
+	pinned         bool
+	socketID       uint64
+	fastMode       fastMode
+	policyChanged  <-chan struct{}
+	idleTimeout    time.Duration
+	messageLimit   int64
+	generationSpan trace.Span
 }
 
 type websocketInvalidation struct {
@@ -140,9 +144,20 @@ func (r *responsesWebSocketRelay) close() {
 	for thread := range r.liveThreads {
 		r.server.stats.deactivateThread(thread)
 	}
+	if observed := observation(r.ctx); observed != nil {
+		observed.cleaned, observed.account = true, r.current.account.id()
+		observed.event(r.ctx, "cleanup", attribute.String("account", observed.account), attribute.Int("pending_turns", len(r.turns)), attribute.Int("readers_joined", len(r.readers)), attribute.Bool("claim_released", true), attribute.Bool("active_registry_removed", true))
+		if r.generationSpan != nil {
+			if observed.outcome != "completed" && observed.outcome != "incomplete" {
+				r.generationSpan.SetStatus(codes.Error, observed.outcome)
+			}
+			r.generationSpan.End()
+		}
+	}
 }
 
 func (r *responsesWebSocketRelay) closeDownstream(status websocket.StatusCode, reason string) {
+	observation(r.ctx).event(r.ctx, "relay_close", attribute.Int("websocket_close_status", int(status)), attribute.String("reason", reason), attribute.String("retry_owner", "client"), attribute.Bool("inference_replayed", false))
 	if err := r.downstream.Close(status, reason); err != nil {
 		r.server.log.Debug("downstream websocket close failed", "thread", r.thread, "status", status, "error", err)
 	}
@@ -173,6 +188,10 @@ func (r *responsesWebSocketRelay) switchAccount(next *websocketDial, model, serv
 		r.closeDownstream(websocket.StatusServiceRestart, "account became unavailable during connection setup")
 		return false
 	}
+	if observed := observation(r.ctx); observed != nil {
+		observed.account = r.current.account.id()
+		observed.event(r.ctx, "account_switch_ready", attribute.String("from_account", previous.account.id()), attribute.String("account", observed.account), attribute.String("phase", "before_transmission"), attribute.Bool("write_attempted", observed.writeAttempted), attribute.Bool("response_created", false))
+	}
 	r.server.log.Info("websocket selected model-compatible account",
 		"thread", r.thread,
 		"from_account", previous.account.id(),
@@ -186,10 +205,22 @@ func (r *responsesWebSocketRelay) switchAccount(next *websocketDial, model, serv
 func (r *responsesWebSocketRelay) writeUpstream(message websocketMessage) bool {
 	ctx, cancel := context.WithTimeout(r.ctx, upstreamWait)
 	defer cancel()
+	observed := observation(r.ctx)
+	if observed != nil {
+		observed.writeAttempted = true
+		observed.writeAt = time.Now()
+	}
+	observed.event(r.ctx, "upstream_write_started", attribute.String("account", r.current.account.id()), attribute.Int("bytes", len(message.data)), attribute.String("replay_owner_after_write_attempt", "client"))
+	started := time.Now()
 	if err := r.current.conn.Write(ctx, message.kind, message.data); err != nil {
+		observed.event(r.ctx, "upstream_write_failed", attribute.String("error_type", telemetryErrorClass(err)), attribute.Bool("possibly_transmitted", true))
 		r.closeDownstream(websocket.StatusServiceRestart, "upstream websocket unavailable")
 		return false
 	}
+	if observed != nil {
+		observed.writeSucceeded = true
+	}
+	observed.event(r.ctx, "upstream_write_finished", attribute.Int64("elapsed_ms", time.Since(started).Milliseconds()), attribute.Bool("success", true))
 	return true
 }
 
@@ -248,6 +279,7 @@ func (r *responsesWebSocketRelay) handleResponseCreate(message websocketMessage,
 		return false
 	}
 	allowed := r.server.allowedAccounts(event.Model, event.ServiceTier)
+	observation(r.ctx).event(r.ctx, "turn_preflight", attribute.String("account", r.current.account.id()), attribute.Bool("pinned", r.pinned), attribute.Bool("account_move", r.current.moved), attribute.Bool("model_tier_allowed", accountAllowed(allowed, r.current.account.id())), attribute.Bool("catalog_filter_active", allowed != nil), attribute.Bool("portable_frame", websocketRequestPortable(event)), attribute.Bool("turn_state_header_present", strings.TrimSpace(r.request.Header.Get(codexTurnStateKey)) != ""))
 	if (r.current.moved || !accountAllowed(allowed, r.current.account.id())) && !websocketRequestPortable(event) {
 		r.closeDownstream(websocket.StatusTryAgainLater, "account-bound turn cannot move accounts")
 		return false
@@ -261,6 +293,9 @@ func (r *responsesWebSocketRelay) handleResponseCreate(message websocketMessage,
 	// First-turn model selection may have waited for another handshake.
 	if r.fastModeChanged() {
 		return false
+	}
+	if observed := observation(r.ctx); observed != nil && r.generationSpan == nil {
+		r.ctx, r.generationSpan = observed.start(r.ctx, "codex.response", attribute.String("account", r.current.account.id()), attribute.String("model", event.Model), attribute.String("effective_tier", event.ServiceTier))
 	}
 	if !r.writeUpstream(message) {
 		return false
@@ -277,15 +312,19 @@ func (r *responsesWebSocketRelay) ensureCompatibleAccount(event websocketEnvelop
 		r.closeDownstream(websocket.StatusServiceRestart, "requested model requires another account")
 		return false
 	}
+	preflight, span := observation(r.ctx).start(r.request.Context(), "codex.model_preflight", attribute.String("from_account", r.current.account.id()), attribute.Bool("portable_frame", websocketRequestPortable(event)))
+	defer span.End()
+	request := r.request.WithContext(preflight)
 	var next *websocketDial
 	var failed *http.Response
 	var err error
 	if r.current.claim != nil {
-		next, failed, err = r.server.dialResponsesWebSocketReplacing(r.request, r.route, event.Model, event.ServiceTier, r.current.claim)
+		next, failed, err = r.server.dialResponsesWebSocketReplacing(request, r.route, event.Model, event.ServiceTier, r.current.claim)
 	} else {
-		next, failed, err = r.server.dialResponsesWebSocket(r.request, r.route, event.Model, event.ServiceTier)
+		next, failed, err = r.server.dialResponsesWebSocket(request, r.route, event.Model, event.ServiceTier)
 	}
 	if err != nil || failed != nil {
+		span.SetStatus(codes.Error, "model_preflight_failed")
 		defer closeWebSocketResponse(failed)
 		r.server.log.Warn("model-compatible websocket unavailable", "thread", r.thread, "model", event.Model, "service_tier", event.ServiceTier, "error", err)
 		r.downstream.setupFailed(r.ctx, failed, err)
@@ -327,6 +366,7 @@ func (r *responsesWebSocketRelay) startTurn(event websocketEnvelope) {
 
 func (r *responsesWebSocketRelay) handleUpstream(message websocketMessage) bool {
 	if message.err != nil {
+		observation(r.ctx).event(r.ctx, "upstream_closed", attribute.String("error_type", telemetryErrorClass(message.err)), attribute.Int("close_status", int(websocket.CloseStatus(message.err))))
 		r.closeDownstream(websocket.StatusServiceRestart, "upstream websocket unavailable")
 		return false
 	}
@@ -346,6 +386,9 @@ func (r *responsesWebSocketRelay) handleUpstream(message websocketMessage) bool 
 	}
 	if parsed {
 		retryUsage := websocketRejection(event) == websocketRejectionUsageLimit && r.canRetryUsageLimit()
+		if rejected := websocketRejection(event); rejected != websocketRejectionNone {
+			observation(r.ctx).event(r.ctx, "reconnect_decision", attribute.String("rejection", string(rejected)), attribute.Bool("usage_reconnect_signal", retryUsage), attribute.Int("pending_turns", len(r.turns)), attribute.Bool("accepted_before_rejection", len(r.turns) > 0 && r.turns[0].created), attribute.Bool("turn_state_metadata_present", len(r.turns) > 0 && strings.TrimSpace(r.turns[0].turnState) != ""), attribute.Bool("turn_state_header_present", strings.TrimSpace(r.request.Header.Get(codexTurnStateKey)) != ""), attribute.Bool("upstream_turn_state_present", r.current.resp != nil && strings.TrimSpace(r.current.resp.Header.Get(codexTurnStateKey)) != ""), attribute.String("retry_owner", "client"), attribute.Bool("inference_replayed", false))
+		}
 		var allowed bool
 		rejection, allowed = r.handleUpstreamEvent(event)
 		if !allowed {
@@ -453,6 +496,13 @@ func (r *responsesWebSocketRelay) responseCreated() bool {
 			return false
 		}
 		r.turns[index].created = true
+		if observed := observation(r.ctx); observed != nil {
+			observed.accepted, observed.account = true, r.current.account.id()
+			attrs := observed.safe([]attribute.KeyValue{attribute.String("account", observed.account), attribute.String("prior_owner", r.current.priorOwner), attribute.String("routing_reason", string(r.current.routingReason)), attribute.Bool("accepted_switch", acceptance.logSwitch), attribute.Bool("route_persisted", acceptance.persisted)})
+			observed.root.SetAttributes(attrs...)
+			trace.SpanFromContext(r.ctx).SetAttributes(attrs...)
+			observed.emit(r.ctx, slog.LevelInfo, "response_accepted", true, attribute.String("account", observed.account), attribute.String("prior_owner", r.current.priorOwner), attribute.String("routing_reason", string(r.current.routingReason)), attribute.Bool("accepted_switch", acceptance.logSwitch), attribute.Bool("route_persisted", acceptance.persisted), attribute.Bool("write_succeeded", observed.writeSucceeded), attribute.Int64("accept_latency_ms", time.Since(turn.sent).Milliseconds()))
+		}
 		if turn.counted {
 			if _, live := r.liveThreads[turn.statsThread]; !live {
 				r.server.stats.activateThread(turn.statsThread)
@@ -493,6 +543,7 @@ func (r *responsesWebSocketRelay) responseFinished(event websocketEnvelope) {
 		if serviceTier == "" {
 			serviceTier = turn.serviceTier
 		}
+		observation(r.ctx).usage(r.ctx, model, serviceTier, event.Type, event.Response.Usage)
 		if !event.Response.Usage.empty() {
 			logResponseUsage(r.server.log, turn.statsThread, r.current.account.id(), model, serviceTier, turn.metadata, time.Since(turn.sent), event.Response.Usage)
 		}
@@ -506,6 +557,7 @@ func (r *responsesWebSocketRelay) responseFinished(event websocketEnvelope) {
 
 func (r *responsesWebSocketRelay) restartForFastMode() {
 	r.server.preserveWebSocketRetryOwner(r.current)
+	observation(r.ctx).event(r.ctx, "policy_changed", attribute.String("account", r.current.account.id()), attribute.Bool("owner_preserved", true), attribute.String("retry_owner", "client"))
 	r.closeDownstream(websocket.StatusServiceRestart, "fast mode changed; reconnect")
 }
 

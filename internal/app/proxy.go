@@ -12,6 +12,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -42,6 +45,8 @@ type server struct {
 	lookupAPIKey     func(string) (string, bool, error)
 	client           *http.Client
 	log              *slog.Logger
+	tracer           trace.Tracer
+	responseLogKeys  responseLogKeys
 	admission        *admissionGate
 	resources        *resourceMonitor
 	countries        countryResolver
@@ -150,7 +155,7 @@ func (s *server) routes() http.Handler {
 	for _, path := range []string{"/v1/responses", "/codex/responses", "/v1/codex/responses"} {
 		mux.Handle("GET "+path, responses)
 	}
-	mux.Handle("POST /v1/responses", s.admitted(s.responsesHTTP))
+	mux.Handle("POST /v1/responses", s.observedResponses(s.admitted(s.responsesHTTP)))
 	mux.HandleFunc("GET /v1/models", s.models)
 	return mux
 }
@@ -241,6 +246,10 @@ func (s *server) refreshed(account *Account, id string) bool {
 }
 
 func (s *server) refreshedContext(ctx context.Context, account *Account, id string) bool {
+	ctx, waitSpan := s.responseTracer().Start(ctx, "codex.credentials.wait")
+	defer waitSpan.End()
+	started := time.Now()
+	observation(ctx).event(ctx, "refresh_wait_started", attribute.String("account", id))
 	s.log.Debug("refreshing account", "account", id)
 	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
@@ -249,7 +258,7 @@ func (s *server) refreshedContext(ctx context.Context, account *Account, id stri
 		lifetime = context.Background()
 	}
 	owner := refreshOwner{
-		lifetime: lifetime, client: s.client, operations: &s.refreshes,
+		lifetime: lifetime, client: s.client, operations: &s.refreshes, tracer: s.responseTracer(), log: s.log,
 		persist: s.pool.persistAccountStateContext,
 		completed: func(completion context.Context, err error) error {
 			// Completion, not a surviving waiter or a later pool reload, owns
@@ -267,9 +276,12 @@ func (s *server) refreshedContext(ctx context.Context, account *Account, id stri
 		},
 	}
 	if err := account.refreshOwned(ctx, owner); err != nil {
+		spanFailure(waitSpan, err)
+		observation(ctx).event(ctx, "refresh_wait_finished", attribute.String("account", id), attribute.Bool("success", false), attribute.String("error_type", telemetryErrorClass(err)), attribute.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 		s.log.Debug("refresh wait ended", "account", id, "error", err)
 		return false
 	}
+	observation(ctx).event(ctx, "refresh_wait_finished", attribute.String("account", id), attribute.Bool("success", true), attribute.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 	return true
 }
 

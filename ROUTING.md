@@ -222,7 +222,11 @@ Routing logs use these reasons:
 - `owner_model_incompatible`, `owner_attempt_failed`
 
 Ignore `account_move=true` on routing-attempt and handshake logs when counting
-accepted switches.
+accepted switches. HTTP also emits request-correlated `http responses` records:
+count `stage=response_accepted` with `accepted_switch=true`, not
+`stage=route_selected` or a handshake. Optional OTel spans expose transmission,
+acceptance and cache usage without changing this policy. See
+[OBSERVABILITY.md](OBSERVABILITY.md) for the trace and safe-switch checklist.
 
 ## Persistence and migrations
 

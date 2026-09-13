@@ -62,7 +62,8 @@ func responseFailure(fields responseFields, fallback int) httpResponseFailure {
 	return failure
 }
 
-func (d *httpResponsesDownstream) fail(failure httpResponseFailure) error {
+func (d *httpResponsesDownstream) fail(failure httpResponseFailure) (err error) {
+	defer func() { observation(d.ctx).delivery(d.ctx, err, d.committed) }()
 	if d.finished {
 		return errResponseFinished
 	}
@@ -72,6 +73,7 @@ func (d *httpResponsesDownstream) fail(failure httpResponseFailure) error {
 	if failure.Status < 400 || failure.Status > 599 {
 		failure.Status = 502
 	}
+	observation(d.ctx).failure(d.ctx, failure.Status, failure.Code, d.committed)
 	if failure.Type == "" {
 		failure.Type = "balancer_error"
 	}
@@ -103,7 +105,8 @@ func (d *httpResponsesDownstream) fail(failure httpResponseFailure) error {
 		data = d.redact(data)
 		d.writeDeadline()
 		d.writer.WriteHeader(failure.Status)
-		d.writer.Write(data)
+		_, writeErr := d.writer.Write(data)
+		observation(d.ctx).delivery(d.ctx, writeErr, d.committed)
 	}
 	return errResponseFinished
 }

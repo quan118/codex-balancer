@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const maxActiveProxyRequests = 128
@@ -66,10 +68,16 @@ func (g *admissionGate) wait(ctx context.Context) error {
 func (s *server) admitted(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.admission == nil {
+			observation(r.Context()).event(r.Context(), "admission", attribute.Bool("gate_enabled", false))
 			next(w, r)
 			return
 		}
 		if !s.admission.acquire() {
+			s.admission.mu.Lock()
+			active, limit, draining := s.admission.active, s.admission.limit, s.admission.draining
+			s.admission.mu.Unlock()
+			observation(r.Context()).event(r.Context(), "admission", attribute.Bool("accepted", false), attribute.Int("active", active), attribute.Int("limit", limit), attribute.Bool("draining", draining))
+			observation(r.Context()).reject(r.Context(), http.StatusServiceUnavailable, "server_busy_or_draining")
 			if r.Method == http.MethodPost {
 				// Reject without draining an HTTP inference body from a slow sender.
 				w.Header().Set("Connection", "close")
@@ -80,6 +88,10 @@ func (s *server) admitted(next http.HandlerFunc) http.Handler {
 			return
 		}
 		defer s.admission.release()
+		if observed := observation(r.Context()); observed != nil {
+			observed.admitted = true
+			observed.event(r.Context(), "admission", attribute.Bool("gate_enabled", true), attribute.Bool("accepted", true))
+		}
 		next(w, r)
 	})
 }

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type responsesWebSocketDialer struct {
@@ -98,7 +100,18 @@ func newResponsesWebSocketDialer(s *server, request *http.Request, route websock
 	}, nil
 }
 
-func (d *responsesWebSocketDialer) dial() (*websocketDial, *http.Response, error) {
+func (d *responsesWebSocketDialer) dial() (dial *websocketDial, failed *http.Response, err error) {
+	observed := observation(d.request.Context())
+	ctx, routeSpan := observed.start(d.request.Context(), "codex.route", attribute.String("model", d.model), attribute.String("effective_tier", d.serviceTier), attribute.Bool("replacing_claim", d.replacing != nil))
+	d.request = d.request.WithContext(ctx)
+	defer func() {
+		spanFailure(routeSpan, err)
+		if failed != nil {
+			routeSpan.SetStatus(codes.Error, "handshake_rejected")
+			routeSpan.SetAttributes(attribute.Int("upstream_status", failed.StatusCode))
+		}
+		routeSpan.End()
+	}()
 	poolResetTried := false
 	for attempt := 0; ; attempt++ {
 		var selection claimedRoutingDecision
@@ -108,6 +121,7 @@ func (d *responsesWebSocketDialer) dial() (*websocketDial, *http.Response, error
 			selection = d.server.claimAccount(d.route, d.durable, d.model, d.serviceTier, d.skip, attempt)
 		}
 		decision := selection.routingDecision
+		observed.selection(ctx, selection, attempt)
 		if decision.blocked != "" {
 			return nil, nil, d.unavailable(errRouteOwnerUnavailable)
 		}
@@ -122,6 +136,7 @@ func (d *responsesWebSocketDialer) dial() (*websocketDial, *http.Response, error
 			return nil, nil, d.unavailable(errNoAccountAvailable)
 		}
 		if decision.moved() && strings.TrimSpace(d.request.Header.Get(codexTurnStateKey)) != "" {
+			observed.event(ctx, "account_move_blocked", attribute.String("reason", "turn_state_header"), attribute.Bool("write_attempted", false))
 			selection.claim.release()
 			return nil, nil, errAccountBoundTurn
 		}
@@ -153,6 +168,7 @@ func (d *responsesWebSocketDialer) dial() (*websocketDial, *http.Response, error
 		}
 		retry, done, response, err := d.handleFailure(result, account, attempt, retained)
 		selection.claim.release()
+		observed.event(ctx, "setup_attempt_finished", attribute.String("account", account.id()), attribute.Bool("same_attempt_retry", retry), attribute.Bool("finished", done), attribute.String("retry_phase", "setup_only"), attribute.Bool("claim_released", true))
 		if done {
 			return nil, response, err
 		}
@@ -163,6 +179,10 @@ func (d *responsesWebSocketDialer) dial() (*websocketDial, *http.Response, error
 }
 
 func (d *responsesWebSocketDialer) recoverPool(candidates []routingCandidate) bool {
+	observed := observation(d.request.Context())
+	ctx, span := observed.start(d.request.Context(), "codex.pool_recovery")
+	defer span.End()
+	observed.event(ctx, "pool_recovery_started", attribute.Bool("write_attempted", false))
 	excluded := maps.Clone(d.resetRetried)
 	allowed := d.server.allowedAccounts(d.model, d.serviceTier)
 	for _, candidate := range candidates {
@@ -170,7 +190,8 @@ func (d *responsesWebSocketDialer) recoverPool(candidates []routingCandidate) bo
 			excluded[candidate.id] = true
 		}
 	}
-	recovered := d.server.recoverPoolUsageLimit(d.request.Context(), excluded)
+	recovered := d.server.recoverPoolUsageLimit(ctx, excluded)
+	observed.event(ctx, "pool_recovery_finished", attribute.Bool("recovered", recovered != nil), attribute.String("error_type", telemetryErrorClass(ctx.Err())))
 	if recovered == nil || excluded[recovered.id()] {
 		return false
 	}
@@ -200,11 +221,25 @@ func (d *responsesWebSocketDialer) open(account *Account) upstreamWebSocketDial 
 	ctx, cancel := context.WithTimeout(d.request.Context(), upstreamWait)
 	defer cancel()
 	headers, digest := responsesWebSocketHeaders(d.request.Header, account)
+	observed := observation(ctx)
+	if observed != nil {
+		observed.secrets = append(observed.secrets, strings.TrimPrefix(headers.Get("Authorization"), "Bearer "))
+		observed.remember(account.persisted())
+	}
+	ctx, span := observed.start(ctx, "codex.websocket.handshake", attribute.String("account", account.id()))
+	defer span.End()
+	observed.event(ctx, "handshake_started", attribute.String("account", account.id()))
 	result.accessToken = digest
 	result.conn, result.response, result.err = websocket.Dial(ctx, d.upstream, &websocket.DialOptions{
 		HTTPClient: d.server.client,
 		HTTPHeader: headers,
 	})
+	spanFailure(span, result.err)
+	status := 0
+	if result.response != nil {
+		status = result.response.StatusCode
+	}
+	observed.event(ctx, "handshake_finished", attribute.String("account", account.id()), attribute.Int("upstream_status", status), attribute.Bool("success", result.err == nil), attribute.String("error_type", telemetryErrorClass(result.err)), attribute.Int64("elapsed_ms", time.Since(result.sent).Milliseconds()))
 	return result
 }
 
@@ -228,6 +263,10 @@ func (d *responsesWebSocketDialer) routed(result upstreamWebSocketDial, selectio
 		account.accepted(time.Now())
 	}
 	decision := selection.routingDecision
+	if observed := observation(d.request.Context()); observed != nil {
+		observed.account = account.id()
+		observed.event(d.request.Context(), "upstream_ready", attribute.String("account", account.id()), attribute.String("prior_owner", decision.priorOwner), attribute.String("routing_reason", string(decision.reason)), attribute.Bool("account_move", decision.moved()), attribute.Bool("response_created", false), attribute.Bool("upstream_turn_state_present", result.response != nil && strings.TrimSpace(result.response.Header.Get(codexTurnStateKey)) != ""))
+	}
 	attrs := []any{
 		"thread", d.thread,
 		"attempt", attempt + 1,

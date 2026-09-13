@@ -56,6 +56,7 @@ func serverCmd(args []string) (resultErr error) {
 	legacyKey := fs.String("key", os.Getenv("CODEX_BALANCER_API_KEY"), "deprecated bearer key to import into an empty state database")
 	insecure := fs.Bool("no-auth", false, "serve without a bearer key; any local process can spend your quota")
 	jsonLogs := fs.Bool("json", false, "format logs as JSON")
+	otelTracing := fs.Bool("otel", false, "export OpenTelemetry traces using OTLP HTTP environment settings")
 	plain := fs.Bool("no-tui", false, "show logs on stderr instead of the dashboard")
 	logPath := fs.String("log-file", defaultLogPath(), "log file; empty disables file logging")
 	poll := fs.Duration("poll", 10*time.Minute, "how often to refresh account limits; 0 turns it off")
@@ -105,6 +106,19 @@ func serverCmd(args []string) (resultErr error) {
 	defer stop()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	telemetry, err := newTelemetry(ctx, *otelTracing)
+	if err != nil {
+		return err
+	}
+	if telemetry != nil {
+		defer func() {
+			shutdown, stop := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+			defer stop()
+			if err := telemetry.Shutdown(shutdown); err != nil {
+				log.Warn("telemetry shutdown incomplete", "error_type", telemetryErrorClass(err))
+			}
+		}()
+	}
 	srv := &server{
 		ctx:          ctx,
 		pool:         pool,
@@ -118,6 +132,12 @@ func serverCmd(args []string) (resultErr error) {
 		admission:    newAdmissionGate(maxActiveProxyRequests),
 		resources:    newResourceMonitor(),
 	}
+	if telemetry != nil {
+		srv.tracer = telemetry.Tracer(telemetryScope)
+	}
+	log.Info("HTTP Responses observability configured", "structured_request_logs", true, "otel_enabled", telemetry != nil)
+	// This defer also runs before telemetry shutdown, so late shared refresh
+	// completion spans are ended before the exporter is flushed.
 	// Every exit path must join refresh publication before deferred store.Close.
 	defer func() { resultErr = errors.Join(resultErr, srv.stopRefreshes(cancel)) }()
 	if err := srv.reloadSettings(); err != nil {

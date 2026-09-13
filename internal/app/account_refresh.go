@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Each operation owns its result and lifetime; callers own only their wait.
@@ -15,12 +18,15 @@ type accountRefresh struct {
 	waiters   int
 	abandoned bool
 	err       error // published by closing done
+	observed  *refreshObservation
 }
 
 type refreshOwner struct {
 	lifetime   context.Context
 	client     *http.Client
 	operations *refreshOperations
+	tracer     trace.Tracer
+	log        *slog.Logger
 	persist    func(context.Context, accountState) (accountState, error)
 	completed  func(context.Context, error) error
 }
@@ -49,6 +55,7 @@ func (a *Account) refreshOwned(wait context.Context, owner refreshOwner) error {
 				continue
 			}
 		}
+		first := operation == nil
 		if operation == nil {
 			if err := owner.lifetime.Err(); err != nil {
 				a.mu.Unlock()
@@ -69,7 +76,8 @@ func (a *Account) refreshOwned(wait context.Context, owner refreshOwner) error {
 				}
 			}
 			ctx, cancel := context.WithTimeout(owner.lifetime, refreshTimeout)
-			operation = &accountRefresh{done: make(chan struct{}), cancel: cancel}
+			ctx, observed := observeRefresh(ctx, wait, owner.tracer, owner.log, claimsFromToken(a.IDToken).Auth.AccountID)
+			operation = &accountRefresh{done: make(chan struct{}), cancel: cancel, observed: observed}
 			a.inflight = operation
 			state := a.accountState
 			go func() {
@@ -77,18 +85,27 @@ func (a *Account) refreshOwned(wait context.Context, owner refreshOwner) error {
 				if owner.operations != nil {
 					defer func() { owner.operations.finish(completionErr) }()
 				}
+				defer observed.span.End() // before registration is released/exporter shutdown
+				observed.outcome(ctx, "exchange_started", nil)
 				tokens, permanent, err := exchangeRefreshToken(ctx, owner.client, state.RefreshToken)
+				observed.outcome(ctx, "exchange_finished", err)
 				cancel()
 				// Decoded results must survive waiter/runtime cancellation. Only
 				// the completion budget (or its shutdown grace) can interrupt this
 				// phase, including persistence and unavailable-owner notification.
 				completion, stop := context.WithTimeout(completionParent, refreshCompletionTimeout)
+				completion = trace.ContextWithSpan(completion, observed.span)
+				completion, completionSpan := observed.tracer.Start(completion, "codex.credentials.complete")
 				err, completionErr = a.finishRefresh(completion, owner.persist, state, tokens, permanent, err)
 				if owner.completed != nil {
 					notifyErr := owner.completed(completion, err)
 					err = errors.Join(err, notifyErr)
 					completionErr = errors.Join(completionErr, notifyErr)
 				}
+				observed.outcome(completion, "publication_finished", completionErr)
+				spanFailure(completionSpan, completionErr)
+				completionSpan.End()
+				spanFailure(observed.span, err)
 				stop()
 				a.mu.Lock()
 				operation.err = err
@@ -98,7 +115,9 @@ func (a *Account) refreshOwned(wait context.Context, owner refreshOwner) error {
 			}()
 		}
 		operation.waiters++
+		waiterCount := operation.waiters
 		a.mu.Unlock()
+		operation.observed.waiter(wait, first, waiterCount)
 
 		var err error
 		select {

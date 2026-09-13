@@ -244,6 +244,20 @@ The test isolates HOME/XDG state and restricts inference fetches to its local
 balancer. It does not install plugins, load personal credentials, or discover
 models over the network.
 
+## Observability
+
+HTTP Responses has verbose, request-correlated logs. Use `server -no-tui -json`
+for JSON logs; clients can report `X-Codex-Balancer-Request-Id` from response
+headers. Add `-otel` to export real traces to a configured OTLP HTTP collector:
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 codex-balancer server -no-tui -json -otel
+```
+
+See [OBSERVABILITY.md](OBSERVABILITY.md) for trace configuration, privacy/buffering
+limits, and how to check account-switch boundaries and actual cached-token usage.
+Tracing is optional and does not change routing or retry behavior.
+
 ## Routing
 
 Routing logic is in ROUTING.md.
