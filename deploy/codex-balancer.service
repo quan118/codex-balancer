@@ -5,7 +5,7 @@ Wants=network-online.target
 Requires=codex-balancer.socket
 
 [Service]
-ExecStart=/usr/local/bin/codex-balancer server -addr 0.0.0.0:8000 -no-tui
+ExecStart=/usr/local/bin/codex-balancer server -addr 0.0.0.0:8000 -no-tui -json
 Restart=always
 RestartSec=2
 UMask=0077
