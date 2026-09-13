@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Read codex-balancer logs over SSH; print selected metadata, never raw payloads."""
+
+import argparse
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+FIELDS = (
+    "time", "level", "msg", "stage", "request_id", "trace_id", "span_id",
+    "http.request.method", "http.route", "http_status", "upstream_status",
+    "mapped_status", "failure_status", "outcome", "error_code", "error_type",
+    "error_class", "phase", "close_status", "close_reason_present", "socket_id",
+    "account", "prior_owner", "from_account", "to_account", "routing_reason",
+    "accepted_switch", "route_persisted", "session_hash", "thread_hash",
+    "model", "service_tier", "effective_tier", "content_encoding", "wire_bytes",
+    "body_bytes", "input_tokens", "cached_tokens", "cached_input_percent",
+    "output_tokens", "elapsed_ms", "connection_age_ms", "since_last_event_ms",
+    "last_event_type", "pending_turns", "accepted_pending_turns", "active_turns",
+    "status", "write_attempted", "write_succeeded", "accepted",
+    "sse_committed", "relay_cleaned", "admission_released", "inference_replayed",
+    "retry_owner", "otel_enabled",
+)
+NOISY_MESSAGES = ("routing candidate", "usage polled")
+NOISY_STAGES = ("routing_candidate", "upstream_event", "downstream_event")
+STATUS_FIELDS = ("http_status", "upstream_status", "mapped_status", "failure_status", "status")
+
+
+def selected(record, args):
+    if args.request and record.get("request_id") != args.request:
+        return False
+    if args.errors:
+        return record.get("level") in ("WARN", "ERROR") or any(
+            isinstance(record.get(key), int) and 400 <= record[key] <= 599
+            for key in STATUS_FIELDS
+        )
+    return args.all_events or (
+        record.get("msg") not in NOISY_MESSAGES
+        and record.get("stage") not in NOISY_STAGES
+    )
+
+
+def stream_logs(source, args):
+    skipped = 0
+    for line in source:
+        try:
+            record = json.loads(line)
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        if not isinstance(record, dict) or not selected(record, args):
+            continue
+        output = {key: record[key] for key in FIELDS if key in record}
+        inputs = record.get("input_tokens")
+        cached = record.get("cached_tokens")
+        if isinstance(inputs, (int, float)) and inputs > 0 and isinstance(cached, (int, float)):
+            output["cached_input_percent"] = round(100 * cached / inputs, 2)
+        # Older WS records contain an error string rather than an error class.
+        # Recognize only fixed categories; never print the raw error/body.
+        error = str(record.get("error", "")).lower()
+        if error and "error_class" not in output:
+            output["error_class"] = (
+                "normal_close" if record.get("status") in (1000, 1001) else
+                "eof" if "eof" in error else
+                "canceled" if "context canceled" in error else
+                "timeout" if "timeout" in error or "timed out" in error else
+                "unclassified"
+            )
+        print(json.dumps(output, ensure_ascii=True), flush=True)
+    if skipped:
+        print(f"Skipped {skipped} non-JSON journal lines.", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="balancer", help="SSH host (default: %(default)s)")
+    parser.add_argument("--service", default="codex-balancer.service", help="user systemd service")
+    parser.add_argument("--since", default="30 minutes ago", help="journalctl time selector")
+    parser.add_argument("-n", "--lines", type=int, default=500, help="maximum initial journal lines")
+    parser.add_argument("-f", "--follow", action="store_true", help="follow new records")
+    parser.add_argument("--request", help="show one HTTP request_id")
+    parser.add_argument("--errors", action="store_true", help="only warnings/errors or failure HTTP statuses")
+    parser.add_argument("--all-events", action="store_true", help="include event/candidate metadata (still no payloads)")
+    parser.add_argument("--input", metavar="FILE", help="read saved JSONL instead of SSH; use - for stdin")
+    args = parser.parse_args()
+    if args.lines < 1 or args.lines > 100000:
+        parser.error("--lines must be between 1 and 100000")
+    if args.input:
+        if args.follow:
+            parser.error("--follow cannot be combined with --input")
+        if args.input == "-":
+            stream_logs(sys.stdin, args)
+        else:
+            with Path(args.input).open(encoding="utf-8", errors="replace") as source:
+                stream_logs(source, args)
+        return 0
+    journal = ["journalctl", "--user", "--unit", args.service, "--since", args.since,
+               "--lines", str(args.lines), "--no-pager", "--output=cat"]
+    if args.follow:
+        journal.append("--follow")
+    command = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+               "-o", "StrictHostKeyChecking=yes", "--", args.host, shlex.join(journal)]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    try:
+        with process.stdout as source:
+            stream_logs(source, args)
+        return process.wait()
+    except (KeyboardInterrupt, BrokenPipeError):
+        return 130
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except OSError as error:
+        print(f"Could not read logs: {error}", file=sys.stderr)
+        raise SystemExit(1)
