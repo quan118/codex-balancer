@@ -19,15 +19,13 @@ import (
 const (
 	countryLookupEndpoint = "https://api.country.is/"
 	countryLookupTimeout  = 5 * time.Second
-	countryLookupRetry    = 30 * time.Second
 	countryLookupBodyMax  = 64 << 10
 	countryLookupBatchMax = 100
 )
 
 type countryState struct {
-	code    string
-	ready   bool
-	retryAt time.Time
+	code  string
+	ready bool
 }
 
 type countryResolver struct {
@@ -76,9 +74,8 @@ func (r *countryResolver) queue(threads []ThreadSnapshot) []string {
 		}
 	}
 	ips := make([]string, 0, len(live))
-	now := time.Now()
 	for ip := range live {
-		if state, ok := r.states[ip]; ok && (state.retryAt.IsZero() || now.Before(state.retryAt)) {
+		if _, ok := r.states[ip]; ok {
 			continue
 		}
 		r.states[ip] = countryState{}
@@ -107,14 +104,9 @@ func (r *countryResolver) code(rawIP string) string {
 func (r *countryResolver) apply(ips []string, codes map[string]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := time.Now()
 	for _, ip := range ips {
 		if _, ok := r.states[ip]; ok {
-			state := countryState{code: codes[ip], ready: true}
-			if state.code == "" {
-				state.retryAt = now.Add(countryLookupRetry)
-			}
-			r.states[ip] = state
+			r.states[ip] = countryState{code: codes[ip], ready: true}
 		}
 	}
 }

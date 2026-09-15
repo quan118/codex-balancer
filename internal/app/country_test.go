@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
-	"testing/synctest"
-	"time"
 )
 
 func TestCountryResolverTracksLivePublicIPs(t *testing.T) {
@@ -53,68 +51,6 @@ func TestCountryResolverLimitsEachBatch(t *testing.T) {
 	resolver.apply(first, nil)
 	if got := len(resolver.queue(threads)); got != 1 {
 		t.Fatalf("second batch size = %d, want 1", got)
-	}
-}
-
-func TestCountryResolverRetriesUnresolvedIPs(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		codes map[string]string
-		want  []string
-	}{
-		{name: "failed batch", want: []string{"1.1.1.1", "8.8.8.8"}},
-		{name: "missing country", codes: map[string]string{"8.8.8.8": "US"}, want: []string{"1.1.1.1"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				resolver := countryResolver{}
-				threads := []ThreadSnapshot{
-					{ClientIP: "8.8.8.8"},
-					{ClientIP: "1.1.1.1"},
-					{ClientIP: "10.0.0.1"},
-				}
-				resolver.apply(resolver.queue(threads), test.codes)
-				for _, ip := range test.want {
-					if got := resolver.code(ip); got != "" {
-						t.Fatalf("unresolved country code for %s = %q", ip, got)
-					}
-				}
-				if got := resolver.queue(threads); len(got) != 0 {
-					t.Fatalf("lookup during retry cooldown = %v", got)
-				}
-
-				threads = append(threads, ThreadSnapshot{ClientIP: "9.9.9.9"})
-				newIPs := resolver.queue(threads)
-				if !slices.Equal(newIPs, []string{"9.9.9.9"}) {
-					t.Fatalf("new IP lookup during retry cooldown = %v, want [9.9.9.9]", newIPs)
-				}
-				resolver.apply(newIPs, map[string]string{"9.9.9.9": "US"})
-				time.Sleep(29 * time.Second)
-				if got := resolver.queue(threads); len(got) != 0 {
-					t.Fatalf("lookup before retry cooldown ends = %v", got)
-				}
-				time.Sleep(time.Second)
-				retry := resolver.queue(threads)
-				slices.Sort(retry)
-				if !slices.Equal(retry, test.want) {
-					t.Fatalf("retry IPs = %v, want %v", retry, test.want)
-				}
-				if got := resolver.queue(threads); len(got) != 0 {
-					t.Fatalf("duplicate lookup while retry is in flight = %v", got)
-				}
-				resolver.apply(retry, map[string]string{"8.8.8.8": "US", "1.1.1.1": "AU"})
-				if got := resolver.code("1.1.1.1"); got != "AU" {
-					t.Fatalf("country code after retry = %q, want AU", got)
-				}
-				if got := resolver.code("8.8.8.8"); got != "US" {
-					t.Fatalf("country code after retry = %q, want US", got)
-				}
-				time.Sleep(time.Minute)
-				if got := resolver.queue(threads); len(got) != 0 {
-					t.Fatalf("lookup for successfully cached countries = %v", got)
-				}
-			})
-		})
 	}
 }
 
