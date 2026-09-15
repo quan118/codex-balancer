@@ -31,8 +31,8 @@ func TestCountryResolverTracksLivePublicIPs(t *testing.T) {
 		t.Fatalf("repeated country lookup IPs = %v", repeated)
 	}
 	resolver.apply(ips, map[string]string{"8.8.8.8": "US"})
-	if got := resolver.label("8.8.8.8"); got != "🇺🇸" {
-		t.Fatalf("country label = %q, want %q", got, "🇺🇸")
+	if got := resolver.code("8.8.8.8"); got != "US" {
+		t.Fatalf("country code = %q, want US", got)
 	}
 	resolver.queue(nil)
 	if len(resolver.states) != 0 {
@@ -75,8 +75,8 @@ func TestCountryResolverRetriesUnresolvedIPs(t *testing.T) {
 				}
 				resolver.apply(resolver.queue(threads), test.codes)
 				for _, ip := range test.want {
-					if got := resolver.label(ip); got != "" {
-						t.Fatalf("unresolved country label for %s = %q", ip, got)
+					if got := resolver.code(ip); got != "" {
+						t.Fatalf("unresolved country code for %s = %q", ip, got)
 					}
 				}
 				if got := resolver.queue(threads); len(got) != 0 {
@@ -103,11 +103,11 @@ func TestCountryResolverRetriesUnresolvedIPs(t *testing.T) {
 					t.Fatalf("duplicate lookup while retry is in flight = %v", got)
 				}
 				resolver.apply(retry, map[string]string{"8.8.8.8": "US", "1.1.1.1": "AU"})
-				if got := resolver.label("1.1.1.1"); got != "🇦🇺" {
-					t.Fatalf("country label after retry = %q, want 🇦🇺", got)
+				if got := resolver.code("1.1.1.1"); got != "AU" {
+					t.Fatalf("country code after retry = %q, want AU", got)
 				}
-				if got := resolver.label("8.8.8.8"); got != "🇺🇸" {
-					t.Fatalf("country label after retry = %q, want 🇺🇸", got)
+				if got := resolver.code("8.8.8.8"); got != "US" {
+					t.Fatalf("country code after retry = %q, want US", got)
 				}
 				time.Sleep(time.Minute)
 				if got := resolver.queue(threads); len(got) != 0 {

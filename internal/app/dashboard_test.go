@@ -171,7 +171,7 @@ func TestDashboardSSEStreamsEscapedHTML(t *testing.T) {
 		`a***e@***.com`,
 		`<td class="dim">pro</td>`,
 		`2private`,
-		`🇺🇸 ret`,
+		`>🇺🇸</span> ret</td>`,
 		`<td>☀️ high</td>`,
 		`<td class="status"><span class="status-mark status-checking">◌</span> checking</td>`,
 		`<span>1 checking</span>`,
@@ -841,7 +841,7 @@ func TestDashboardRoutingShowsTokenUsage(t *testing.T) {
 		t.Fatalf("routing rows = %d, want one", len(view.Threads))
 	}
 	thread := view.Threads[0]
-	if thread.Client != "🇺🇸 ret" || thread.Model != "☀️ xhigh" || thread.UncachedInput != "500" || thread.CacheRate != "75" || thread.Output != "300" || thread.ContextUsed != "0% (1)" || thread.Latency != "2s" || thread.Requests != "1" || thread.Cost != "$0.012" {
+	if thread.Client.String() != "🇺🇸 ret" || thread.Model != "☀️ xhigh" || thread.UncachedInput != "500" || thread.CacheRate != "75" || thread.Output != "300" || thread.ContextUsed != "0% (1)" || thread.Latency != "2s" || thread.Requests != "1" || thread.Cost != "$0.012" {
 		t.Fatalf("routing row = %+v", thread)
 	}
 	if thread.Info != "Request: compaction\nCodex thread: 2private\nTurn: 0private\nAgent: compact" || !strings.Contains(thread.ContextInfo, "Context window: 258.4K") || !strings.Contains(thread.ContextInfo, "Auto compact at: 244.8K") || !strings.Contains(thread.ContextInfo, "Tokens used: 2.3K") || !strings.Contains(thread.ContextInfo, "Context used: 0%") || !strings.Contains(thread.ContextInfo, "Compactions: 1") || thread.LatencyInfo != "First byte: 500ms\nTotal: 2s" {
@@ -852,7 +852,7 @@ func TestDashboardRoutingShowsTokenUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(payload)
-	for _, expected := range []string{"<td class=\"dim\">🇺🇸 ret</td>", "<th>Model (thinking mode)</th>", "<td>☀️ xhigh</td>", "<th>Cache %</th>", "<th>Context used<br>Compactions</th>", "<th>Cost</th>", "<td>$0.012</td>", "Codex thread: 2private", "Auto compact at: 244.8K", "Compactions: 1"} {
+	for _, expected := range []string{`class="has-tooltip client-location" data-tooltip="United States"`, `aria-label="United States"`, `>🇺🇸</span> ret</td>`, "<th>Model (thinking mode)</th>", "<td>☀️ xhigh</td>", "<th>Cache %</th>", "<th>Context used<br>Compactions</th>", "<th>Cost</th>", "<td>$0.012</td>", "Codex thread: 2private", "Auto compact at: 244.8K", "Compactions: 1"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard missing %q", expected)
 		}
@@ -924,13 +924,35 @@ func TestDashboardModel(t *testing.T) {
 	}
 }
 
-func TestDashboardClientNameUsesCountryAndAPIKeySuffix(t *testing.T) {
-	resolver := &countryResolver{states: map[string]countryState{"1.1.1.1": {code: "AU", ready: true}}}
-	if got := dashboardClientName(ThreadSnapshot{ClientIP: "1.1.1.1", APIKeySuffix: "xyz"}, resolver); got != "🇦🇺 xyz" {
-		t.Fatalf("client name = %q, want country and token suffix", got)
+func TestDashboardClientViewUsesCountryAndAPIKeySuffix(t *testing.T) {
+	resolver := &countryResolver{states: map[string]countryState{
+		"1.1.1.1": {code: "AU", ready: true},
+		"8.8.8.8": {code: "GB", ready: true},
+	}}
+	for _, test := range []struct {
+		ip   string
+		want dashboardClientView
+	}{
+		{"1.1.1.1", dashboardClientView{Icon: "🇦🇺", Info: "Australia", Suffix: "xyz"}},
+		{"8.8.8.8", dashboardClientView{Icon: "🇬🇧", Info: "United Kingdom", Suffix: "xyz"}},
+		{"10.0.0.1", dashboardClientView{Icon: "Unknown", Info: "Country unavailable", Suffix: "xyz"}},
+		{"invalid", dashboardClientView{Icon: "Unknown", Info: "Country unavailable", Suffix: "xyz"}},
+	} {
+		if got := newDashboardClientView(ThreadSnapshot{ClientIP: test.ip, APIKeySuffix: "xyz"}, resolver); got != test.want {
+			t.Errorf("client for %s = %+v, want %+v", test.ip, got, test.want)
+		}
 	}
-	if got := dashboardClientName(ThreadSnapshot{}, resolver); got != "Unknown" {
+	if got := newDashboardClientView(ThreadSnapshot{}, nil).String(); got != "Unknown" {
 		t.Fatalf("unknown client name = %q", got)
+	}
+}
+
+func TestDashboardClientViewShowsTunnelForLoopback(t *testing.T) {
+	for _, ip := range []string{"127.0.0.1", "::1", "::ffff:127.0.0.1"} {
+		client := newDashboardClientView(ThreadSnapshot{ClientIP: ip, APIKeySuffix: "jOY"}, nil)
+		if client.String() != "🚇 jOY" || client.Info != "SSH tunnel" {
+			t.Errorf("client for %s = %+v, want 🚇 jOY with SSH tunnel info", ip, client)
+		}
 	}
 }
 

@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/text/language"
+	"golang.org/x/text/language/display"
 )
 
 const (
@@ -87,7 +90,7 @@ func (r *countryResolver) queue(threads []ThreadSnapshot) []string {
 	return ips
 }
 
-func (r *countryResolver) label(rawIP string) string {
+func (r *countryResolver) code(rawIP string) string {
 	ip, ok := countryIP(rawIP)
 	if !ok {
 		return ""
@@ -98,7 +101,7 @@ func (r *countryResolver) label(rawIP string) string {
 	if !ok || !state.ready {
 		return ""
 	}
-	return countryLabel(state.code)
+	return state.code
 }
 
 func (r *countryResolver) apply(ips []string, codes map[string]string) {
@@ -170,6 +173,14 @@ func countryLabel(code string) string {
 		'🇦' + rune(code[1]-'A'),
 	}
 	return string(flag)
+}
+
+func countryName(code string) string {
+	region, err := language.ParseRegion(code)
+	if err != nil || !region.IsCountry() {
+		return ""
+	}
+	return display.English.Regions().Name(region)
 }
 
 func validCountryCode(code string) bool {

@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,7 +111,7 @@ type dashboardThreadView struct {
 	DOMID         string
 	Key           string
 	Info          string
-	Client        string
+	Client        dashboardClientView
 	Account       string
 	Model         string
 	ModelInfo     string
@@ -133,6 +134,19 @@ type dashboardEventView struct {
 	Kind    string
 	Account string
 	Detail  string
+}
+
+type dashboardClientView struct {
+	Icon   string
+	Info   string
+	Suffix string
+}
+
+func (c dashboardClientView) String() string {
+	if c.Suffix == "" {
+		return c.Icon
+	}
+	return c.Icon + " " + c.Suffix
 }
 
 type dashboardBroadcaster struct {
@@ -439,8 +453,8 @@ func (s *server) currentDashboard(now time.Time) dashboardView {
 
 	threadViews := make([]dashboardThreadView, 0, len(snapshot.Threads))
 	for _, thread := range snapshot.Threads {
-		clientName := dashboardClientName(thread, &s.countries)
-		threadViews = append(threadViews, newDashboardThreadView(thread, names[thread.Account], clientName, s.catalog.contextLimits(thread.Account, thread.Model), now))
+		client := newDashboardClientView(thread, &s.countries)
+		threadViews = append(threadViews, newDashboardThreadView(thread, names[thread.Account], client, s.catalog.contextLimits(thread.Account, thread.Model), now))
 	}
 
 	events := make([]dashboardEventView, 0, len(snapshot.Events))
@@ -563,21 +577,24 @@ func trafficPercentages(accounts []accountStatsResponse) []int64 {
 	return percentages
 }
 
-func dashboardClientName(thread ThreadSnapshot, countries *countryResolver) string {
-	country := ""
+func newDashboardClientView(thread ThreadSnapshot, countries *countryResolver) dashboardClientView {
+	client := dashboardClientView{Icon: "Unknown", Info: "Country unavailable", Suffix: thread.APIKeySuffix}
+	if ip, err := netip.ParseAddr(thread.ClientIP); err == nil && ip.Unmap().IsLoopback() {
+		client.Icon = "🚇"
+		client.Info = "SSH tunnel"
+		return client
+	}
 	if countries != nil {
-		country = countries.label(thread.ClientIP)
+		code := countries.code(thread.ClientIP)
+		if name := countryName(code); name != "" {
+			client.Icon = countryLabel(code)
+			client.Info = name
+		}
 	}
-	if country == "" {
-		country = "Unknown"
-	}
-	if thread.APIKeySuffix == "" {
-		return country
-	}
-	return country + " " + thread.APIKeySuffix
+	return client
 }
 
-func newDashboardThreadView(thread ThreadSnapshot, account, clientName string, limits modelContextLimits, now time.Time) dashboardThreadView {
+func newDashboardThreadView(thread ThreadSnapshot, account string, client dashboardClientView, limits modelContextLimits, now time.Time) dashboardThreadView {
 	used := thread.LatestUsage.contextTokens()
 	cost := "--"
 	if !thread.Usage.empty() {
@@ -588,7 +605,7 @@ func newDashboardThreadView(thread ThreadSnapshot, account, clientName string, l
 		DOMID:         dashboardDOMID("thread", thread.Key),
 		Key:           shortKeySuffix(thread.Key),
 		Info:          dashboardThreadInfo(thread.Metadata),
-		Client:        clientName,
+		Client:        client,
 		Account:       account,
 		Model:         model,
 		ModelInfo:     modelInfo,

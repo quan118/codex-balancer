@@ -31,6 +31,7 @@ section { margin-top: 1rem }
 #stream-status[data-state="disconnected"] { color: var(--red-11) }
 .status-mark { display: inline-block; min-width: 1em; text-align: center }
 .has-tooltip { cursor: help; text-decoration: underline dotted; text-underline-offset: .2em }
+.client-location { text-decoration: none }
 #dashboard-tooltip { position: fixed; z-index: 1; width: max-content; max-width: min(28rem, calc(100vw - 1rem)); padding: .5rem .75rem; border-radius: .5rem; background: var(--background); color: var(--text-main); font-size: .8125rem; line-height: 1.4; pointer-events: none; white-space: pre-line }
 #dashboard-tooltip strong { font-weight: 700 }
 .scroll { overflow-x: auto }
@@ -192,7 +193,7 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums }
 </tr></thead>
 <tbody>{{if .Threads}}{{range .Threads}}<tr id="{{.DOMID}}">
 <td>{{if .Info}}<span id="{{.DOMID}}-info" class="has-tooltip" data-tooltip="{{.Info}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Key}}</span>{{else}}{{.Key}}{{end}}</td>
-<td class="dim">{{.Client}}</td>
+<td class="dim"><span id="{{.DOMID}}-client-location" class="has-tooltip client-location" data-tooltip="{{.Client.Info}}" role="img" aria-label="{{.Client.Info}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Client.Icon}}</span>{{if .Client.Suffix}} {{.Client.Suffix}}{{end}}</td>
 <td>{{.Account}}</td>
 <td>{{if .ModelInfo}}<span id="{{.DOMID}}-model" class="has-tooltip" data-tooltip="{{.ModelInfo}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Model}}</span>{{else}}{{.Model}}{{end}}</td>
 <td>{{if .Fast}}<span role="img" aria-label="Fast">⚡️</span>{{end}}</td>

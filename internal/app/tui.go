@@ -458,7 +458,7 @@ func (d dashboard) threads(width, height int) string {
 	for _, t := range d.snap.Threads {
 		name := cmp.Or(names[t.Account], shortKey(t.Account))
 		views = append(views, routingThreadView{
-			dashboardThreadView: newDashboardThreadView(t, name, dashboardClientName(t, d.countries), d.catalog.contextLimits(t.Account, t.Model), now),
+			dashboardThreadView: newDashboardThreadView(t, name, newDashboardClientView(t, d.countries), d.catalog.contextLimits(t.Account, t.Model), now),
 			clientIP:            t.ClientIP,
 		})
 	}
@@ -472,7 +472,7 @@ func (d dashboard) threads(width, height int) string {
 	ipWidth := len("IP")
 	for _, view := range views {
 		accountWidth = max(accountWidth, lipgloss.Width(view.Account))
-		clientWidth = max(clientWidth, lipgloss.Width(view.Client))
+		clientWidth = max(clientWidth, lipgloss.Width(view.Client.String()))
 		modelWidth = max(modelWidth, lipgloss.Width(view.Model))
 		ipWidth = max(ipWidth, lipgloss.Width(view.clientIP))
 	}
@@ -489,7 +489,7 @@ func (d dashboard) threads(width, height int) string {
 	}
 	columns := []routingColumn{
 		{"Thread", 8, styles.text, func(view routingThreadView) string { return view.Key }},
-		{"Client", clientWidth, styles.dim, func(view routingThreadView) string { return view.Client }},
+		{"Client", clientWidth, styles.dim, func(view routingThreadView) string { return view.Client.String() }},
 		{"IP", ipWidth, styles.dim, func(view routingThreadView) string { return view.clientIP }},
 		{"Account", accountWidth, styles.spark, func(view routingThreadView) string { return view.Account }},
 		{"Model", modelWidth, styles.text, func(view routingThreadView) string { return view.Model }},
