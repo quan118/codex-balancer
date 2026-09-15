@@ -1,6 +1,6 @@
 # codex-balancer
 
-<img width="3000" height="1930" alt="screenshot-Codex Balancer" src="https://github.com/user-attachments/assets/199da68d-c73e-4614-8776-349ec60df87b" />
+<img width="3268" height="1438" alt="CleanShot 2026-09-15 at 11 57 29@2x" src="https://github.com/user-attachments/assets/530effd5-a001-485b-bc92-23340aadfd37" />
 
 _I wrote this README by hand, no LLM :)_
 
