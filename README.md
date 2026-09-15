@@ -58,12 +58,6 @@ codex-balancer keys rm my-laptop
 `keys list` includes the input, cached, output, and total tokens attributed to
 each key.
 
-New keys use a JWT envelope for compatibility with clients such as pi. They are
-still opaque bearer credentials: the server requires an exact match of the
-entire stored key, not trusted JWT claims or signature validation. The embedded
-account ID is synthetic, not a pool account. Existing `cb_` and legacy keys
-remain valid; no database migration or key rotation is required for Codex.
-
 State lives in `~/.codex-balancer/state.db`.
 
 ## Point Codex at it
