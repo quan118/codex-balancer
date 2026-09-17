@@ -321,6 +321,14 @@ func (s *server) adminBankedReset(w http.ResponseWriter, r *http.Request, sessio
 		notice = "The account has no rate limits to reset."
 	}
 	s.stats.note("admin account reset", account.id(), notice)
+	if result.Code == "reset" {
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+	}
 	usageErr := s.pollUsage(ctx, account)
 	creditsErr := s.pollResetCredits(ctx, account)
 	if usageErr != nil || creditsErr != nil {

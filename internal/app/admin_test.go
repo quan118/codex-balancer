@@ -412,10 +412,12 @@ func TestAdminBankedReset(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			account := testAccount("account-a", 100)
+			account.markSpent()
 			expires := time.Now().Add(30 * 24 * time.Hour)
 			credit := resetCredit{ID: "credit-a", ResetType: "codex_rate_limits", Status: "available", ExpiresAt: &expires}
 			account.adoptResetCredits(time.Now(), 1, []resetCredit{credit})
 			consumed, refreshed := 0, false
+			var consumedAt time.Time
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method + " " + r.URL.Path {
 				case "GET /rate-limit-reset-credits":
@@ -427,6 +429,7 @@ func TestAdminBankedReset(t *testing.T) {
 					json.NewEncoder(w).Encode(payload)
 				case "POST /rate-limit-reset-credits/consume":
 					consumed++
+					consumedAt = time.Now()
 					var body consumeResetCreditRequest
 					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 						t.Error(err)
@@ -438,7 +441,16 @@ func TestAdminBankedReset(t *testing.T) {
 					json.NewEncoder(w).Encode(consumeResetCreditResponse{Code: tc.code, WindowsReset: 2})
 				case "GET /usage":
 					refreshed = true
-					w.Write([]byte(`{"rate_limit":{"primary_window":{"used_percent":0},"secondary_window":{"used_percent":0}}}`))
+					used := 0
+					if tc.code == "reset" && time.Since(consumedAt) < 3*time.Second {
+						used = 100
+					}
+					json.NewEncoder(w).Encode(map[string]any{
+						"rate_limit": map[string]any{
+							"primary_window":   map[string]any{"used_percent": used},
+							"secondary_window": map[string]any{"used_percent": used},
+						},
+					})
 				default:
 					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 					w.WriteHeader(404)
@@ -476,6 +488,9 @@ func TestAdminBankedReset(t *testing.T) {
 				t.Fatal("usage not refreshed")
 			}
 			if tc.code == "reset" {
+				if got := srv.pool.route(nil, nil).account; got != account {
+					t.Fatal("account unavailable after banked reset")
+				}
 				response = adminRequest(h, "POST", "/admin/accounts/reset", form, cookie)
 				if response.Code != 409 || consumed != 1 {
 					t.Fatal("stale submission consumed another credit")
