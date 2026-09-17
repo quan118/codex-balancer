@@ -204,6 +204,39 @@ func TestMaskEmailHidesLocalPartAndDomain(t *testing.T) {
 	}
 }
 
+func TestEventDetailsMaskEmails(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		detail string
+		want   string
+	}{
+		{"refresh", "Quota and banked credits refreshed for alice@example.com.", "Quota and banked credits refreshed for a***e@***.com."},
+		{"multiple", "alice@example.com, bob+work@mail.example.net", "a***e@***.com, b***k@***.net"},
+		{"punctuation", `failed for <first.last@example.com> ("other@example.net")`, `failed for <f***t@***.com> ("o***r@***.net")`},
+		{"unicode", "tést@exämple.com", "t***t@***.com"},
+		{"local domain", "ab@localhost", "a***@***"},
+		{"masked", "a***e@***.com", "a***e@***.com"},
+		{"no email", "upstream returned 503 Service Unavailable", "upstream returned 503 Service Unavailable"},
+		{"empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stats := newStatsWithPrices(priceSnapshot{})
+			stats.note("account refresh", "account-a", tc.detail)
+			stats.failedOver("account-a", tc.detail)
+
+			events := stats.snapshot().Events
+			if len(events) != 2 {
+				t.Fatalf("events = %d, want 2", len(events))
+			}
+			for i, kind := range []string{"account refresh", eventFailover} {
+				if event := events[i]; event.Detail != tc.want || event.Kind != kind || event.Account != "account-a" || event.At.IsZero() {
+					t.Errorf("event = %+v, want kind %q and detail %q", event, kind, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestIPUsesLastForwardedAddress(t *testing.T) {
 	request := httptest.NewRequest("POST", "/v1/responses", nil)
 	request.RemoteAddr = "10.0.0.1:1234"

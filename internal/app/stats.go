@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +27,8 @@ const (
 )
 
 const serviceTierFast = "priority"
+
+var eventEmailPattern = regexp.MustCompile(`[\p{L}\p{N}.!#$%&'*+/=?^_\x60{|}~-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*`)
 
 type Stats struct {
 	mu                 sync.Mutex
@@ -433,6 +436,7 @@ func (s *Stats) reprice(prices priceSnapshot) error {
 }
 
 func (s *Stats) appendEvent(event Event) {
+	event.Detail = eventEmailPattern.ReplaceAllStringFunc(event.Detail, maskEmail)
 	s.events = append(s.events, event)
 	if len(s.events) > eventLog {
 		s.events = s.events[len(s.events)-eventLog:]

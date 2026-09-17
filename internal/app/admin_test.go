@@ -550,6 +550,20 @@ func TestAdminAccountRefresh(t *testing.T) {
 			if failPath != "/rate-limit-reset-credits" && account.resetCredits.count != 2 {
 				t.Fatal("banked credits not updated")
 			}
+			dashboard := adminRequest(h, "GET", "/dashboard", nil)
+			if dashboard.Code != http.StatusOK {
+				t.Fatalf("dashboard status = %d", dashboard.Code)
+			}
+			if strings.Contains(dashboard.Body.String(), account.email()) {
+				t.Fatal("dashboard exposed the account email after refresh")
+			}
+			wantDetail := "Could not refresh all account data. Try again."
+			if failPath == "" {
+				wantDetail = "Quota and banked credits refreshed for a***a@***.com."
+			}
+			if !strings.Contains(dashboard.Body.String(), wantDetail) {
+				t.Fatalf("dashboard missing refresh detail %q", wantDetail)
+			}
 		})
 	}
 }
