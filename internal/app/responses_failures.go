@@ -26,7 +26,6 @@ func upstreamFailure(err error) (httpResponseFailure, websocket.StatusCode) {
 		case websocket.StatusMessageTooBig:
 			failure.Status, failure.Code = 413, "request_too_large"
 			failure.Type = "invalid_request_error"
-			failure.Message += ": request message too large; reduce embedded image/history data or start a new session. /compact can also fail because it sends the same history; retrying the unchanged request will not help"
 		case websocket.StatusProtocolError, websocket.StatusUnsupportedData, websocket.StatusInvalidFramePayloadData, websocket.StatusPolicyViolation, websocket.StatusMandatoryExtension:
 			failure.Status, failure.Type = 400, "invalid_request_error"
 		}
