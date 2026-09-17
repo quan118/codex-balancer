@@ -50,6 +50,7 @@ type server struct {
 	responseLogKeys  responseLogKeys
 	admission        *admissionGate
 	upgradeWait      time.Duration
+	catalogWait      time.Duration
 	resources        *resourceMonitor
 	countries        countryResolver
 	dashboardStreams atomic.Int64
@@ -172,17 +173,11 @@ func (s *server) models(w http.ResponseWriter, r *http.Request) {
 	}
 	clientVersion := strings.TrimSpace(r.URL.Query().Get("client_version"))
 	if clientVersion != "" {
-		ctx := r.Context()
-		if s.ctx != nil {
-			ctx = s.ctx
-		}
-		if err := s.refreshModels(ctx, clientVersion); err != nil && s.log != nil {
-			s.log.Warn("model refresh failed", "error", err)
-		}
+		s.refreshModelsWithin(r.Context(), clientVersion)
 	}
 	models := []modelEntry{}
 	if s.catalog != nil {
-		models = s.catalog.entries()
+		models = s.catalog.entriesFor(clientVersion)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if clientVersion != "" {
@@ -198,6 +193,30 @@ func (s *server) models(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+}
+
+func (s *server) refreshModelsWithin(requestCtx context.Context, clientVersion string) {
+	ctx := requestCtx
+	if s.ctx != nil {
+		ctx = s.ctx
+	}
+	wait := s.catalogWait
+	if wait == 0 {
+		wait = modelsResponseWait
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.refreshModels(ctx, clientVersion) }()
+	select {
+	case err := <-done:
+		if err != nil && s.log != nil {
+			s.log.Warn("model refresh failed", "error", err)
+		}
+	case <-time.After(wait):
+		if s.log != nil {
+			s.log.Debug("serving cached model catalog while the refresh continues", "client_version", clientVersion, "wait", wait)
+		}
+	case <-requestCtx.Done():
+	}
 }
 
 type responseReasoning struct {

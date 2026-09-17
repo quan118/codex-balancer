@@ -14,7 +14,7 @@ import (
 
 const (
 	ApplicationID = 0x43425853
-	schemaVersion = 7
+	schemaVersion = 8
 )
 
 const currentSchema = `CREATE TABLE accounts (
@@ -54,7 +54,7 @@ CREATE TABLE response_usage (
 	account_id TEXT REFERENCES accounts(account_id) ON DELETE SET NULL
 ) STRICT;
 CREATE INDEX response_usage_at ON response_usage (at_ns);
-CREATE INDEX response_usage_api_key ON response_usage (api_key_name);` + settingsSchema + adminSchema
+CREATE INDEX response_usage_api_key ON response_usage (api_key_name);` + settingsSchema + adminSchema + modelsSchema
 
 const settingsSchema = `CREATE TABLE settings (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -231,7 +231,16 @@ func (s *Store) initialize() error {
 		version = 5
 	}
 	if version == 5 || version == 6 {
-		return s.migrateRoutingModes()
+		if err := s.migrateRoutingModes(); err != nil {
+			return err
+		}
+		version = 7
+	}
+	if version == 7 {
+		if err := s.migrateModelsClientVersion(); err != nil {
+			return err
+		}
+		version = 8
 	}
 	if version != schemaVersion {
 		return fmt.Errorf("state schema %d is unsupported; expected %d", version, schemaVersion)

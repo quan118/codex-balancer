@@ -56,8 +56,13 @@ The model endpoint returns the union of known account catalogs.
 Upstream gates each model on a minimum client version, so the catalog follows
 the newest `client_version` the model endpoint has seen. A newer client
 refreshes the catalog at once. An older client neither refreshes it nor
-withdraws the models a newer client uses; every entry carries its own
-`minimal_client_version` for the client to filter on.
+withdraws the models a newer client uses. Codex does not read
+`minimal_client_version`, so the model endpoint filters the union by the
+requesting `client_version` itself. The newest version persists in SQLite and
+seeds the catalog at startup, so the first refresh runs before any client
+asks. A request waits at most four seconds for a refresh in progress and
+otherwise serves the cached catalog, staying inside Codex's five-second
+fetch timeout.
 
 When no account is available, quota polling and new connection attempts recover
 an exhausted account using the usable reset credit that expires soonest across
@@ -237,7 +242,8 @@ The `routes` table and account `last_used_at` values hold routing state across
 restarts. Schema migrations preserve both. Any route reset needs a migration
 policy because the reset discards cache affinity.
 
-Schema 7 removes the legacy `draining` routing mode. Databases on schema 5 or 6
+Schema 8 persists the newest model-catalog client version. Schema 7 removes
+the legacy `draining` routing mode. Databases on schema 5 or 6
 upgrade automatically: saved draining accounts return to `normal`, and saved
 priority accounts stay `priority`. The migration preserves account credentials,
 usage attribution, routes, API keys, and settings.

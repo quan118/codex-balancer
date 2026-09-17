@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -568,4 +569,98 @@ func allowedAccountIDs(allowed map[string]bool) []string {
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+func TestModelsFilterByRequestingClientVersion(t *testing.T) {
+	a := testAccount("account-a", 0)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[{"slug":"gpt-old","minimal_client_version":[0,1,0]},{"slug":"gpt-new","minimal_client_version":[0,2,0]},{"slug":"gpt-any"}]}`)
+	}))
+	defer upstream.Close()
+	server := &server{
+		pool:     &Pool{accounts: []*Account{a}},
+		catalog:  newModelCatalog(),
+		upstream: upstream.URL,
+		client:   upstream.Client(),
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for version, want := range map[string]string{"0.2.0": "[gpt-any gpt-new gpt-old]", "0.1.5": "[gpt-any gpt-old]", "0.0.9": "[gpt-any]"} {
+		request := httptest.NewRequest(http.MethodGet, "/v1/models?client_version="+version, nil)
+		response := httptest.NewRecorder()
+		server.models(response, request)
+		var payload struct {
+			Models []modelEntry `json:"models"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprint(modelSlugs(payload.Models)); got != want {
+			t.Fatalf("client %s models = %s, want %s", version, got, want)
+		}
+	}
+}
+
+func TestModelsServeCachedCatalogWhileRefreshStalls(t *testing.T) {
+	a := testAccount("account-a", 0)
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[{"slug":"gpt-late"}]}`)
+	}))
+	defer upstream.Close()
+	server := &server{
+		pool:        &Pool{accounts: []*Account{a}},
+		catalog:     newModelCatalog(),
+		upstream:    upstream.URL,
+		client:      upstream.Client(),
+		catalogWait: 50 * time.Millisecond,
+		log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	started := time.Now()
+	response := httptest.NewRecorder()
+	server.models(response, httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.1.0", nil))
+	if elapsed := time.Since(started); response.Code != http.StatusOK || elapsed > time.Second || response.Body.String() != "{\"models\":[]}\n" {
+		t.Fatalf("stalled refresh: status=%d elapsed=%s body=%s", response.Code, elapsed, response.Body.String())
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(server.catalog.entries()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("background refresh never completed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	response = httptest.NewRecorder()
+	server.models(response, httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.1.0", nil))
+	if !strings.Contains(response.Body.String(), "gpt-late") {
+		t.Fatalf("catalog not served after refresh: %s", response.Body.String())
+	}
+}
+
+func TestModelsPersistAndSeedNewestClientVersion(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[{"slug":"gpt-persisted"}]}`)
+	}))
+	defer upstream.Close()
+	srv := newTestServer(t, []*Account{testAccount("account-a", 0)})
+	srv.upstream = upstream.URL
+	srv.client = upstream.Client()
+	for _, version := range []string{"0.3.0", "0.2.0"} {
+		srv.models(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/models?client_version="+version, nil))
+	}
+	if stored, err := srv.pool.store.raw.ModelsClientVersion(); err != nil || stored != "0.3.0" {
+		t.Fatalf("stored version = %q, error = %v", stored, err)
+	}
+	catalog := newModelCatalog()
+	catalog.seed("0.3.0")
+	if catalog.version() != "0.3.0" || !catalog.needsRefresh([]string{"account-a"}, "0.3.0", time.Now()) {
+		t.Fatal("seeded catalog does not schedule the startup refresh")
+	}
+	catalog.seed("0.1.0")
+	if catalog.version() != "0.3.0" {
+		t.Fatal("older seed replaced the newest version")
+	}
 }

@@ -143,6 +143,11 @@ func serverCmd(args []string) (resultErr error) {
 	if err := srv.reloadSettings(); err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
+	if version, err := store.raw.ModelsClientVersion(); err != nil {
+		return fmt.Errorf("load model client version: %w", err)
+	} else if version != "" {
+		catalog.seed(version)
+	}
 	go srv.watchSettings(ctx)
 	pool.watch(ctx, func(change poolChange) {
 		log.Info("accounts updated", "added", change.added, "removed", change.removed, "updated", change.updated)

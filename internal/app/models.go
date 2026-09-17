@@ -19,6 +19,7 @@ const (
 	modelRefreshInterval = time.Hour
 	modelRetryInterval   = 5 * time.Minute
 	modelFetchTimeout    = 15 * time.Second
+	modelsResponseWait   = 4 * time.Second
 	maxModelCatalogBody  = 16 << 20
 )
 
@@ -204,7 +205,11 @@ func matchingModelEntry(entries map[string]modelEntry, model string) modelEntry 
 }
 
 func modelInteger(entry modelEntry, key string) int64 {
-	switch value := entry[key].(type) {
+	return numberValue(entry[key])
+}
+
+func numberValue(value any) int64 {
+	switch value := value.(type) {
 	case json.Number:
 		result, _ := value.Int64()
 		return result
@@ -251,6 +256,41 @@ func (c *modelCatalog) newestVersion(clientVersion string) string {
 	return c.clientVersion
 }
 
+func (c *modelCatalog) seed(clientVersion string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if newerClientVersion(c.clientVersion, clientVersion) {
+		c.clientVersion = clientVersion
+		c.nextRefresh = time.Time{}
+	}
+}
+
+func (c *modelCatalog) entriesFor(clientVersion string) []modelEntry {
+	entries := c.entries()
+	if clientVersion == "" {
+		return entries
+	}
+	visible := entries[:0]
+	for _, entry := range entries {
+		if modelVisibleTo(entry, clientVersion) {
+			visible = append(visible, entry)
+		}
+	}
+	return visible
+}
+
+func modelVisibleTo(entry modelEntry, clientVersion string) bool {
+	minimum, _ := entry["minimal_client_version"].([]any)
+	parts := strings.Split(clientVersion, ".")
+	for index, part := range minimum {
+		required := int(numberValue(part))
+		if current := clientVersionPart(parts, index); current != required {
+			return current > required
+		}
+	}
+	return true
+}
+
 func (c *modelCatalog) invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -263,6 +303,7 @@ func (s *server) refreshModels(ctx context.Context, clientVersion string) error 
 	}
 	s.catalog.refreshMu.Lock()
 	defer s.catalog.refreshMu.Unlock()
+	previous := s.catalog.version()
 	clientVersion = s.catalog.newestVersion(clientVersion)
 
 	accounts := s.pool.all()
@@ -330,6 +371,11 @@ func (s *server) refreshModels(ctx context.Context, clientVersion string) error 
 		fresh[result.id] = result.models
 	}
 	s.catalog.replace(activeIDs, fresh, clientVersion)
+	if clientVersion != previous && s.pool.store != nil {
+		if err := s.pool.store.raw.SetModelsClientVersion(clientVersion); err != nil {
+			s.log.Warn("model client version not persisted", "client_version", clientVersion, "error", err)
+		}
+	}
 	s.log.Debug("model catalog refreshed",
 		"accounts", len(activeIDs),
 		"client_version", clientVersion,
