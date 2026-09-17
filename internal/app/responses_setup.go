@@ -26,6 +26,9 @@ func responseSetupFailure(ctx context.Context, failed *http.Response, err error)
 	if errors.As(err, &timeout) && timeout.Timeout() {
 		failure.Status, failure.Code, failure.Message = 504, "upstream_timeout", "upstream connection timed out"
 	}
+	if errors.Is(err, errUpgradeBudget) {
+		failure.Status, failure.Code, failure.Message = 503, "upgrade_timeout", errUpgradeBudget.Error()
+	}
 	var rejection *websocketSetupError
 	if errors.As(err, &rejection) {
 		details, _ := json.Marshal(rejection.details)

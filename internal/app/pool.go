@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	minCooldown       = 30 * time.Second
+	minCooldown       = 5 * time.Second
 	maxCooldown       = time.Hour
 	resetPriorityLead = 24 * time.Hour
 )
@@ -399,25 +399,20 @@ func (a *Account) accepted(at time.Time) {
 }
 
 func (a *Account) rateLimited(h http.Header, attempt int) {
-	until := time.Now().Add(backoff(attempt))
-	if reset := resetHeader(h); !reset.IsZero() {
-		until = reset
+	now := time.Now()
+	until := now.Add(backoff(attempt))
+	if retryAfter := retryAfterHeader(h); retryAfter.After(until) {
+		until = retryAfter
+	}
+	if limit := now.Add(maxCooldown); until.After(limit) {
+		until = limit
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cooldown = until
 }
 
-func resetHeader(h http.Header) time.Time {
-	binding := window{usedPercent: -1}
-	for _, prefix := range []string{"x-codex-primary", "x-codex-secondary-primary"} {
-		if w := readWindow(h, prefix); w.known() && w.usedPercent > binding.usedPercent {
-			binding = w
-		}
-	}
-	if !binding.resetsAt.IsZero() {
-		return binding.resetsAt
-	}
+func retryAfterHeader(h http.Header) time.Time {
 	retryAfter := h.Get("retry-after")
 	if secs, err := strconv.Atoi(retryAfter); err == nil {
 		return time.Now().Add(time.Duration(secs) * time.Second)

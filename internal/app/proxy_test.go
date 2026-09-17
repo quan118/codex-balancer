@@ -1,12 +1,17 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestResponsesHTTPRequiresJSONBody(t *testing.T) {
@@ -63,10 +68,63 @@ func TestServerAcceptsMultipleDatabaseAPIKeysAndSeesChanges(t *testing.T) {
 	assertStatus("secret-a", http.StatusUnauthorized)
 }
 
-func TestResetHeaderAcceptsHTTPDate(t *testing.T) {
+func TestRetryAfterHeaderAcceptsHTTPDate(t *testing.T) {
 	want := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
 	headers := http.Header{"Retry-After": {want.Format(http.TimeFormat)}}
-	if got := resetHeader(headers); !got.Equal(want) {
-		t.Fatalf("reset = %s, want %s", got, want)
+	if got := retryAfterHeader(headers); !got.Equal(want) {
+		t.Fatalf("retry after = %s, want %s", got, want)
+	}
+}
+
+func TestRateLimitedCooldownIgnoresUsageWindowReset(t *testing.T) {
+	account := testAccount("a", 0)
+	reset := time.Now().Add(48 * time.Hour)
+	account.rateLimited(http.Header{
+		"X-Codex-Primary-Used-Percent": {"95"}, "X-Codex-Primary-Reset-At": {fmt.Sprint(reset.Unix())},
+	}, 0)
+	if cooldown := account.routingCandidate().cooldown; cooldown.After(time.Now().Add(2 * minCooldown)) {
+		t.Fatalf("transient cooldown %s follows the usage window instead of a short backoff", time.Until(cooldown))
+	}
+	account.rateLimited(http.Header{"Retry-After": {"20"}}, 0)
+	if cooldown := account.routingCandidate().cooldown; cooldown.Before(time.Now().Add(15*time.Second)) || cooldown.After(time.Now().Add(25*time.Second)) {
+		t.Fatalf("cooldown %s ignores Retry-After", time.Until(cooldown))
+	}
+	account.rateLimited(http.Header{"Retry-After": {"86400"}}, 0)
+	if cooldown := account.routingCandidate().cooldown; cooldown.After(time.Now().Add(maxCooldown + time.Minute)) {
+		t.Fatalf("cooldown %s exceeds the cap", time.Until(cooldown))
+	}
+}
+
+func TestWebSocketUpgradeBudgetFailsFast(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer slow.Close()
+	srv, proxy := newWebSocketProxy(t, slow.URL, []*Account{testAccount("a", 0)})
+	srv.upgradeWait = 100 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	conn, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(proxy.URL, "http")+"/v1/responses", nil)
+	if err == nil {
+		conn.CloseNow()
+		t.Fatal("upgrade succeeded against a stalled upstream")
+	}
+	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("response = %v", resp)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "upgrade_timeout") {
+		t.Fatalf("body = %s", body)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("upgrade refusal took %s", elapsed)
+	}
+	if !srv.pool.all()[0].routingCandidate().cooldown.IsZero() {
+		t.Fatal("budget overrun penalized the account")
 	}
 }

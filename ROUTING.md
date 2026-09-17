@@ -298,6 +298,11 @@ balancer does not add a second reconnect path.
 
 - For a handshake network error or `5xx`, return that attempt without an
   internal retry loop. Codex owns its reconnect policy.
+- The downstream upgrade is answered within ten seconds. Refresh waits,
+  upstream handshakes and account failover that run past that budget fail the
+  attempt with `503` `upgrade_timeout` and no account penalty, so Codex sees a
+  clean retry inside its own fifteen-second connect timeout instead of a
+  client-side timeout followed by HTTP fallback.
 - For handshake `401`, refresh the same account once before routing elsewhere.
   For an event-level `401`, refresh the same account once, send a retryable
   error containing the upstream details, then retire the socket. A permanent
@@ -309,7 +314,11 @@ balancer does not add a second reconnect path.
   replays the request to the same account. The balancer neither replays the request nor marks the
   account spent or cooling.
 - For transient `429`, forward the original event, cool down the account, and
-  retire the socket. The balancer does not replay the request.
+  retire the socket. The balancer does not replay the request. The cooldown is
+  a short backoff starting at five seconds, extended only by an upstream
+  `Retry-After`, and capped at one hour; usage-window reset times never set
+  it, because a per-minute throttle would otherwise park the account until a
+  weekly reset while Codex burns its retry budget on the retained owner.
 - For a usage limit, mark the account spent. If the socket has a thread or
   session identity, exactly one request is pending,
   it has not received `response.created`, no turn-state token was sent in its

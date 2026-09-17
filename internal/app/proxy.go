@@ -22,6 +22,7 @@ const (
 	maxUpstreamErrorBody = 64 << 10
 	refreshTimeout       = 30 * time.Second
 	upstreamWait         = 90 * time.Second
+	websocketUpgradeWait = 10 * time.Second
 )
 
 func newProxyClient() *http.Client {
@@ -48,6 +49,7 @@ type server struct {
 	tracer           trace.Tracer
 	responseLogKeys  responseLogKeys
 	admission        *admissionGate
+	upgradeWait      time.Duration
 	resources        *resourceMonitor
 	countries        countryResolver
 	dashboardStreams atomic.Int64

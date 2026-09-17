@@ -20,6 +20,7 @@ var (
 	errNoAccountAvailable    = errors.New("no account available")
 	errRouteOwnerUnavailable = errors.New("session account temporarily unavailable; retry")
 	errAccountBoundTurn      = errors.New("account-bound turn cannot move accounts; start a new turn or resume")
+	errUpgradeBudget         = errors.New("upstream connection not ready within the upgrade budget; retry")
 )
 
 type websocketDial struct {
@@ -179,7 +180,13 @@ func (s *server) responsesWebSocket(w http.ResponseWriter, r *http.Request) {
 	thread := route.key()
 	s.log.Debug("websocket requested", "thread", thread)
 	redactor := s.responsesRedactor()
-	dial, failed, err := s.dialResponsesWebSocket(r, route, "", "")
+	wait := s.upgradeWait
+	if wait == 0 {
+		wait = websocketUpgradeWait
+	}
+	dialCtx, cancelDial := context.WithTimeoutCause(r.Context(), wait, errUpgradeBudget)
+	dial, failed, err := s.dialResponsesWebSocket(r.WithContext(dialCtx), route, "", "")
+	cancelDial()
 	if err != nil || failed != nil {
 		defer closeWebSocketResponse(failed)
 		peer := &httpResponsesDownstream{writer: w, controller: http.NewResponseController(w), ctx: r.Context(), responsesRedactor: redactor}
