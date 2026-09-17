@@ -17,69 +17,78 @@ import (
 )
 
 func TestCodexAppServerSurfacesUpstreamFailures(t *testing.T) {
-	for _, scenario := range []string{"message too big", "policy", "capacity", "authentication"} {
-		t.Run(scenario, func(t *testing.T) {
-			if os.Getenv("CODEX_BALANCER_TEST_CODEX") == "" {
-				t.Skip("set CODEX_BALANCER_TEST_CODEX to run the app-server integration test")
-			}
-			var attempts atomic.Int64
-			if scenario == "authentication" {
-				useOAuthRefreshServer(t)
-			}
-			upstream := newWebSocketUpstream(t, func(_ string, conn *websocket.Conn, request websocketEnvelope) {
-				if request.Generate != nil && !*request.Generate {
-					sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
-					return
-				}
-				attempt := attempts.Add(1)
-				switch scenario {
-				case "message too big":
-					conn.Close(websocket.StatusMessageTooBig, "request exceeds upstream limit")
-					return
-				case "policy":
-					conn.Close(websocket.StatusPolicyViolation, "upstream policy detail")
-					return
-				case "capacity":
-					if attempt <= 2 {
-						sendHTTPEvents(t, conn, `{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"original capacity detail"}}}`)
-						return
-					}
-				case "authentication":
-					if attempt == 1 {
-						sendHTTPEvents(t, conn, `{"type":"error","status":401,"error":{"code":"unauthorized","message":"original authentication detail"}}`)
-						return
-					}
-				}
-				sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
+	for _, transport := range []string{"websocket", "http"} {
+		for _, scenario := range []string{"message too big", "policy", "capacity", "authentication"} {
+			t.Run(transport+"/"+scenario, func(t *testing.T) {
+				testCodexAppServerUpstreamFailure(t, transport == "websocket", scenario)
 			})
-			defer upstream.Close()
-			_, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
-			turn, events := runCodexErrorTurn(t, proxy.URL)
-			if scenario == "message too big" || scenario == "policy" {
-				want := "request_too_large"
-				if scenario == "policy" {
-					want = "upstream policy detail"
-				}
-				if turn["status"] != "failed" || attempts.Load() != 1 || !strings.Contains(events, want) || strings.Contains(events, "websocket closed by server") {
-					t.Fatalf("attempts=%d turn=%v events=%s", attempts.Load(), turn, events)
-				}
-			} else {
-				want := int64(3)
-				if scenario == "authentication" {
-					want = 2
-				}
-				if turn["status"] != "completed" || attempts.Load() != want {
-					t.Fatalf("attempts=%d turn=%v events=%s", attempts.Load(), turn, events)
-				}
-				if scenario == "capacity" && !strings.Contains(events, "original capacity detail") {
-					t.Fatalf("retry diagnostics lost original error: %s", events)
-				}
-			}
-		})
+		}
 	}
 }
 
-func runCodexErrorTurn(t *testing.T, url string) (map[string]any, string) {
+func testCodexAppServerUpstreamFailure(t *testing.T, websockets bool, scenario string) {
+	if os.Getenv("CODEX_BALANCER_TEST_CODEX") == "" {
+		t.Skip("set CODEX_BALANCER_TEST_CODEX to run the app-server integration test")
+	}
+	var attempts atomic.Int64
+	if scenario == "authentication" {
+		useOAuthRefreshServer(t)
+	}
+	upstream := newWebSocketUpstream(t, func(_ string, conn *websocket.Conn, request websocketEnvelope) {
+		if request.Generate != nil && !*request.Generate {
+			sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
+			return
+		}
+		attempt := attempts.Add(1)
+		switch scenario {
+		case "message too big":
+			conn.Close(websocket.StatusMessageTooBig, "request exceeds upstream limit")
+			return
+		case "policy":
+			conn.Close(websocket.StatusPolicyViolation, "upstream policy detail")
+			return
+		case "capacity":
+			if attempt <= 2 {
+				sendHTTPEvents(t, conn, `{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"original capacity detail"}}}`)
+				return
+			}
+		case "authentication":
+			if attempt == 1 {
+				sendHTTPEvents(t, conn, `{"type":"error","status":401,"error":{"code":"unauthorized","message":"original authentication detail"}}`)
+				return
+			}
+		}
+		sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
+	})
+	defer upstream.Close()
+	_, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
+	turn, events := runCodexErrorTurn(t, proxy.URL, websockets)
+	if scenario == "message too big" || scenario == "policy" || scenario == "capacity" && !websockets {
+		want := "request_too_large"
+		switch scenario {
+		case "policy":
+			want = "upstream policy detail"
+		case "capacity":
+			want = "capacity"
+		}
+		if turn["status"] != "failed" || attempts.Load() != 1 || !strings.Contains(events, want) || strings.Contains(events, "websocket closed by server") {
+			t.Fatalf("attempts=%d turn=%v events=%s", attempts.Load(), turn, events)
+		}
+	} else {
+		want := int64(3)
+		if scenario == "authentication" {
+			want = 2
+		}
+		if turn["status"] != "completed" || attempts.Load() != want {
+			t.Fatalf("attempts=%d turn=%v events=%s", attempts.Load(), turn, events)
+		}
+		if scenario == "capacity" && !strings.Contains(events, "original capacity detail") {
+			t.Fatalf("retry diagnostics lost original error: %s", events)
+		}
+	}
+}
+
+func runCodexErrorTurn(t *testing.T, url string, websockets bool) (map[string]any, string) {
 	t.Helper()
 	binary := os.Getenv("CODEX_BALANCER_TEST_CODEX")
 	home, cwd := t.TempDir(), t.TempDir()
@@ -92,11 +101,11 @@ unbounded_connection_retries = false
 name = "OpenAI"
 base_url = %q
 experimental_bearer_token = "test-key"
-supports_websockets = true
+supports_websockets = %t
 requires_openai_auth = false
 request_max_retries = 2
 stream_max_retries = 4
-`, url+"/v1")
+`, url+"/v1", websockets)
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}

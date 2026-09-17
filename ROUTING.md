@@ -343,8 +343,9 @@ balancer does not add a second reconnect path.
   parameter, and extra fields. `upstream_type` and, when supplied,
   `upstream_status` retain the original event classification. This lets Codex
   report the cause while retaining its existing reconnect and replay behavior.
-- Permanent WebSocket request failures use `status: 400` because Codex treats
-  other HTTP error statuses, including `413`, as retryable. The error code and
+- Permanent request failures use `status: 400` on every transport because
+  Codex treats other HTTP error statuses, including `413`, as retryable and
+  would resend the same oversized or account-bound request. The error code and
   `upstream_close_status` preserve the size or protocol failure. Setup errors
   retain the upstream HTTP status in `upstream_status` and preserve `Retry-After`.
 - Newly surfaced error messages redact known account credentials. Raw upstream
@@ -404,14 +405,16 @@ still cannot move accounts, in either handshake headers or client metadata.
 | `response.completed` | 200 Responses object or SSE | Forward terminal once, then `[DONE]`, close. |
 | Legacy `response.done` | Normalize to `response.completed` for HTTP only | Same terminal handling. |
 | Valid `response.incomplete` | 200, preserve status, partial output, details and any usage | Forward incomplete once, then `[DONE]`, close; not a transport failure. |
-| `error` / `response.failed` | Non-2xx JSON error with useful code/message/param | Typed error or failed event, then `[DONE]`, close. |
+| `error` | Non-2xx JSON error carrying the upstream error object | Forwarded as an `error` event, then `[DONE]`, close. |
+| `response.failed` | JSON: non-2xx error carrying the upstream error object. SSE: 200 `response.failed` forwarded unchanged | Forwarded unchanged, then `[DONE]`, close. |
+| Balancer failure (disconnect, timeout, policy, account) | Non-2xx JSON error | `response.failed` event carrying the error object, then `[DONE]`, close. |
 | Context overflow / invalid request | 400 unless upstream supplies another error status | Preserve error code; no successful completion. |
 | Model unavailable | 404 for `model_not_found`/`model_not_available`, or upstream error status | Preserve error code. No model substitution. |
 | Rate/usage limit | 429 | Preserve typed error; shared quota/cooldown rules apply. |
 | Capacity, connection rollover, upstream credential rejection | 503 | Preserve typed error; client owns retries. |
 | Account invalidation / fast-mode change | 503 | Typed `route_unavailable` / `policy_changed` error. |
 | Account-bound move | 400 `account_bound_request` | Typed error, never transmit bound input to replacement. |
-| Upstream WebSocket `1009` | 413 `request_too_large` | Typed error with close code and reason; never synthesize completion. |
+| Upstream WebSocket `1009` | 400 `request_too_large` | Typed error with close code and reason; never synthesize completion. |
 | Upstream protocol, payload, or policy rejection | 400 | Typed error with close code and reason. |
 | Malformed/binary frame, missing/oversized output or premature EOF | 502 | Typed error; never synthesize completion. |
 | Upstream handshake or event idle timeout | 504 | Typed `upstream_timeout` error. |
@@ -428,7 +431,11 @@ with the HTTP status from the table above. Upstream credential errors keep their
 original message while using `503` to distinguish pool credentials from the
 client's balancer API key.
 Once any SSE event is flushed, the adapter never attempts another HTTP status or
-appends a plain JSON error body. Unknown valid events are forwarded as events;
+appends a plain JSON error body. An SSE request forwards an upstream
+`response.failed` even before commitment, so Codex classifies context overflow,
+capacity, rate limits and usage limits from the error object exactly as it does
+against upstream; JSON error bodies and typed WebSocket errors carry that same
+object, including `plan_type` and `resets_at`. Unknown valid events are forwarded as events;
 normal terminal handling closes promptly even if upstream leaves the socket open.
 
 Identity and zstd requests have separate 8 MiB wire/decoded limits. The zstd

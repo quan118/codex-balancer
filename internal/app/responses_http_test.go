@@ -488,13 +488,15 @@ func TestHTTPResponsesInBandErrors(t *testing.T) {
 				resp := postResponse(t, proxy.URL, `{"model":"pool-model","stream":true}`, http.Header{"Session-Id": {"session"}})
 				body := readHTTPBody(t, resp)
 				want := test.status
-				if committed {
+				streamed := committed || test.kind == "response.failed"
+				if streamed {
 					want = 200
 				}
 				if resp.StatusCode != want || !strings.Contains(body, test.code) || strings.Contains(body, "private") {
 					t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 				}
-				if committed && (strings.Count(body, "data: [DONE]") != 1 || strings.Contains(body, "event: response.completed")) {
+				terminal := "event: " + test.kind
+				if streamed && (strings.Count(body, "data: [DONE]") != 1 || strings.Count(body, terminal) != 1 || strings.Contains(body, "event: response.completed")) {
 					t.Fatalf("false/duplicate terminal: %s", body)
 				}
 				assertHTTPClean(t, srv)

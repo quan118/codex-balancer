@@ -24,7 +24,7 @@ func upstreamFailure(err error) (httpResponseFailure, websocket.StatusCode) {
 		failure.Message = fmt.Sprintf("upstream WebSocket closed with code %d", closed.Code)
 		switch closed.Code {
 		case websocket.StatusMessageTooBig:
-			failure.Status, failure.Code = 413, "request_too_large"
+			failure.Status, failure.Code = 400, "request_too_large"
 			failure.Type = "invalid_request_error"
 		case websocket.StatusProtocolError, websocket.StatusUnsupportedData, websocket.StatusInvalidFramePayloadData, websocket.StatusPolicyViolation, websocket.StatusMandatoryExtension:
 			failure.Status, failure.Type = 400, "invalid_request_error"
@@ -74,7 +74,7 @@ func (d websocketDownstream) writeFailure(ctx context.Context, failure httpRespo
 	}
 	fields := map[string]any{
 		"type": "error", "status": status, "headers": websocketErrorHeaders(headers),
-		"error": httpResponseError{Code: failure.Code, Type: failure.Type, Message: failure.Message, Param: failure.Param},
+		"error": failure.errorObject(),
 	}
 	if failure.UpstreamStatus != 0 {
 		fields["upstream_status"] = failure.UpstreamStatus

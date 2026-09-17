@@ -14,6 +14,19 @@ type httpResponseFailure struct {
 	Type           string
 	Message        string
 	Param          json.RawMessage
+	Details        responseFields
+}
+
+func (f httpResponseFailure) errorObject() responseFields {
+	object := responseFields{}
+	for key, value := range f.Details {
+		object[key] = value
+	}
+	for key, value := range map[string]string{"code": f.Code, "type": f.Type, "message": f.Message} {
+		object[key], _ = json.Marshal(value)
+	}
+	object["param"] = f.Param
+	return object
 }
 
 func responseFailure(fields responseFields, fallback int) httpResponseFailure {
@@ -28,9 +41,11 @@ func responseFailure(fields responseFields, fallback int) httpResponseFailure {
 	details := fields
 	if nested, err := responseObject(fields["error"]); err == nil {
 		details = nested
+		failure.Details = nested
 	} else if response, err := responseObject(fields["response"]); err == nil {
 		if nested, err := responseObject(response["error"]); err == nil {
 			details = nested
+			failure.Details = nested
 		}
 	}
 	for key, target := range map[string]*string{"code": &failure.Code, "type": &failure.Type, "message": &failure.Message} {
@@ -84,16 +99,19 @@ func (d *httpResponsesDownstream) fail(failure httpResponseFailure) (err error) 
 		failure.Param = json.RawMessage("null")
 	}
 	if d.committed {
-		fields := responseFields{}
-		for key, value := range map[string]string{"type": "error", "code": failure.Code, "message": failure.Message} {
-			fields[key], _ = json.Marshal(value)
+		response := responseFields{}
+		for key, value := range d.created {
+			response[key] = value
 		}
-		fields["param"] = failure.Param
+		response["status"] = json.RawMessage(`"failed"`)
+		response["error"], _ = json.Marshal(failure.errorObject())
+		fields := responseFields{"type": json.RawMessage(`"response.failed"`)}
+		fields["response"], _ = json.Marshal(response)
 		fields["sequence_number"], _ = json.Marshal(d.sequence)
 		if err := d.writeEvent(fields); err != nil {
 			return err
 		}
-		// A typed error is the terminal outcome; never invent a completed event.
+		// A failed event is the terminal outcome; never invent a completed event.
 		if err := d.writeDone(); err != nil {
 			return err
 		}
@@ -104,7 +122,7 @@ func (d *httpResponsesDownstream) fail(failure httpResponseFailure) (err error) 
 				d.writer.Header().Set("Retry-After", "1")
 			}
 		}
-		data, _ := json.Marshal(map[string]httpResponseError{"error": {failure.Code, failure.Type, failure.Message, failure.Param}})
+		data, _ := json.Marshal(map[string]responseFields{"error": failure.errorObject()})
 		data = d.redact(data)
 		d.writeDeadline()
 		d.writer.WriteHeader(failure.Status)
@@ -112,13 +130,6 @@ func (d *httpResponsesDownstream) fail(failure httpResponseFailure) (err error) 
 		observation(d.ctx).delivery(d.ctx, writeErr, d.committed)
 	}
 	return errResponseFinished
-}
-
-type httpResponseError struct {
-	Code    string          `json:"code"`
-	Type    string          `json:"type"`
-	Message string          `json:"message"`
-	Param   json.RawMessage `json:"param"`
 }
 
 func (d *httpResponsesDownstream) collect(kind string, fields responseFields) error {

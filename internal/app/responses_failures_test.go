@@ -49,7 +49,7 @@ func TestUpstreamClosePreservesDetailsAcrossTransports(t *testing.T) {
 		http  int
 		ws    int
 	}{
-		{websocket.StatusMessageTooBig, "request_too_large", 413, 400},
+		{websocket.StatusMessageTooBig, "request_too_large", 400, 400},
 		{websocket.StatusPolicyViolation, "upstream_websocket_closed", 400, 400},
 		{websocket.StatusProtocolError, "upstream_websocket_closed", 400, 400},
 		{websocket.StatusInvalidFramePayloadData, "upstream_websocket_closed", 400, 400},

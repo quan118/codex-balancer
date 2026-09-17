@@ -268,7 +268,7 @@ func (d *httpResponsesDownstream) Write(ctx context.Context, _ websocket.Message
 	failed := kind == "error" || kind == "response.failed"
 	if failed {
 		failure := responseFailure(fields, 0)
-		if !d.committed {
+		if !d.committed && !(d.stream && kind == "response.failed") {
 			return d.fail(failure)
 		}
 		observation(ctx).failure(ctx, failure.Status, failure.Code, true)
