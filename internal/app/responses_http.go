@@ -19,6 +19,7 @@ const (
 	maxHTTPResponseBody = 8 << 20
 	maxHTTPOutput       = 16 << 20
 	httpResponseIOWait  = 30 * time.Second
+	httpIdleWait        = 6 * time.Minute
 )
 
 func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
@@ -129,7 +130,7 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 	// The request context is linked to server shutdown above. The same relay
 	// handles claims, invalidation, acceptance and usage for both transports.
 	relay := newResponsesWebSocketRelay(s, peer, upstreamRequest, dial, route, apiKey, mode, changed)
-	relay.idleTimeout = upstreamWait
+	relay.idleTimeout = httpIdleWait
 	relay.messageLimit = maxHTTPOutput
 	relay.messages = make(chan websocketMessage, 1)
 	relay.run()
@@ -153,6 +154,12 @@ func httpResponseRequestHeaders(inbound http.Header) http.Header {
 	} {
 		if value := inbound.Get(name); value != "" {
 			out.Set(name, value)
+		}
+	}
+	for name, values := range inbound {
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, "x-codex-") || strings.HasPrefix(lower, "x-openai-") {
+			out[name] = values
 		}
 	}
 	return out

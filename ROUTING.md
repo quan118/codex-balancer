@@ -378,7 +378,9 @@ requests join provisional ownership but use independent sockets and turn state.
 HTTP uses exact stored bearer-key authentication and one admission slot for the
 entire request, including body read, generation and response writes. Both new
 JWT-shaped keys and legacy keys work; configured no-auth mode is unchanged.
-Only a vetted request-header list is forwarded. Response transport headers are
+Only a vetted request-header list is forwarded: the affinity and identity
+headers above plus every `x-codex-*` and `x-openai-*` header, which carry
+Codex's beta features, responses-lite, subagent, window and turn metadata. Response transport headers are
 removed from SSE events; only `Retry-After` and `X-Request-Id` may become HTTP
 response headers. Pool credentials are redacted from decoded JSON strings in
 upstream error/output data, including alternate JSON escapes. Unrelated strings
@@ -434,8 +436,9 @@ window is capped at 8 MiB, checksums are verified, and trailing malformed data i
 not ignored. Decoding is single-worker/synchronous with context checks between
 reader calls; no asynchronous decoder worker can outlive the request.
 
-Limits are 30 seconds to read the body, 90 seconds per upstream handshake/write
-or idle event wait, and 30 seconds per downstream write/flush. Write deadlines
+Limits are 30 seconds to read the body, 90 seconds per upstream handshake/write,
+six minutes per idle event wait (Codex's own stream idle timeout is five
+minutes, so it governs), and 30 seconds per downstream write/flush. Write deadlines
 are not armed while waiting for generation, and successful non-terminal SSE
 flushes clear them between events. Terminal writes keep their deadline through
 net/http's final buffered write. This also supports HTTP/2 hosting without its

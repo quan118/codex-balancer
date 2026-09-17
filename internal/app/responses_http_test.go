@@ -247,6 +247,33 @@ func TestHTTPResponsesAuthenticationAndAdmission(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsesForwardsCodexHeaders(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	upstream := newHTTPUpstream(t, func(r *http.Request, conn *websocket.Conn, _ []byte) {
+		seen <- r.Header.Clone()
+		sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
+	})
+	srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("pool", 0)})
+	srv.admission = newAdmissionGate(1)
+	resp := postResponse(t, proxy.URL, `{"model":"m","input":"hello"}`, http.Header{
+		"X-Codex-Beta-Features": {"remote_compaction_v2"}, "X-Openai-Subagent": {"review"}, "X-Codex-Window-Id": {"w1"},
+		"X-Openai-Internal-Codex-Responses-Lite": {"true"}, "X-Secret": {"private"}, "Cookie": {"private"}, "Accept": {"text/event-stream"},
+	})
+	readHTTPBody(t, resp)
+	headers := <-seen
+	for name, want := range map[string]string{"X-Codex-Beta-Features": "remote_compaction_v2", "X-Openai-Subagent": "review", "X-Codex-Window-Id": "w1", "X-Openai-Internal-Codex-Responses-Lite": "true"} {
+		if headers.Get(name) != want {
+			t.Errorf("%s = %q, want %q", name, headers.Get(name), want)
+		}
+	}
+	for _, name := range []string{"X-Secret", "Cookie", "Accept"} {
+		if headers.Get(name) != "" {
+			t.Errorf("%s reached upstream", name)
+		}
+	}
+	assertHTTPClean(t, srv)
+}
+
 func TestHTTPResponsesLosslessTranslation(t *testing.T) {
 	const body = `{"model":"exact-model","stream":false,"store":false,"background":false,"previous_response_id":null,"instructions":"explicit","input":[{"role":"system","content":"first"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"second"},{"type":"input_text","text":"third"}]},{"role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"data:image/png;base64,AA=="}]},{"role":"developer","content":"later"},{"type":"function_call","call_id":"call","name":"run","arguments":"{}"},{"type":"function_call_output","call_id":"call","output":"result"},{"type":"custom_tool_call","call_id":"custom","name":"patch","input":"patch text"},{"type":"custom_tool_call_output","call_id":"custom","output":"done"},{"type":"reasoning","id":"rs","encrypted_content":"opaque","summary":[]}],"tools":[{"type":"function","name":"run","parameters":{"type":"object"}},{"type":"custom","name":"patch","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}],"text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object"}},"verbosity":"low"},"reasoning":{"effort":"high","summary":"auto"},"include":["reasoning.encrypted_content"],"service_tier":"priority","prompt_cache_key":"cache","client_metadata":{"trace":"client"},"metadata":{"number":"9007199254740993"},"unknown":{"number":9007199254740993,"decimal":0.123456789012345678901},"temperature":0.3,"top_p":0.9,"max_output_tokens":32768}`
 	captured := make(chan []byte, 1)
