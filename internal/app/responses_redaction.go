@@ -6,7 +6,21 @@ import (
 	"strings"
 )
 
-func (d *httpResponsesDownstream) redactor() *strings.Replacer {
+type responsesRedactor struct {
+	accounts []*Account
+	secrets  []string
+}
+
+func (s *server) responsesRedactor() responsesRedactor {
+	d := responsesRedactor{accounts: s.pool.all()}
+	for _, account := range d.accounts {
+		state := account.persisted()
+		d.secrets = append(d.secrets, state.AccessToken, state.RefreshToken, state.IDToken)
+	}
+	return d
+}
+
+func (d responsesRedactor) redactor() *strings.Replacer {
 	secrets := append([]string(nil), d.secrets...)
 	for _, account := range d.accounts {
 		state := account.persisted()
@@ -23,7 +37,7 @@ func (d *httpResponsesDownstream) redactor() *strings.Replacer {
 	return strings.NewReplacer(pairs...)
 }
 
-func (d *httpResponsesDownstream) redact(data []byte) []byte {
+func (d responsesRedactor) redact(data []byte) []byte {
 	return redactJSONStrings(data, d.redactor())
 }
 

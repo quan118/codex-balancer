@@ -7,11 +7,13 @@ import (
 )
 
 type httpResponseFailure struct {
-	Status  int
-	Code    string
-	Type    string
-	Message string
-	Param   json.RawMessage
+	UpstreamStatus int
+	CloseStatus    int
+	Status         int
+	Code           string
+	Type           string
+	Message        string
+	Param          json.RawMessage
 }
 
 func responseFailure(fields responseFields, fallback int) httpResponseFailure {
@@ -22,6 +24,7 @@ func responseFailure(fields responseFields, fallback int) httpResponseFailure {
 	if status := websocketStatus(envelope); status >= 400 && status <= 599 {
 		failure.Status = status
 	}
+	failure.UpstreamStatus = failure.Status
 	details := fields
 	if nested, err := responseObject(fields["error"]); err == nil {
 		details = nested
@@ -40,7 +43,7 @@ func responseFailure(fields responseFields, fallback int) httpResponseFailure {
 	}
 	switch {
 	case websocketRejection(envelope) == websocketRejectionUnauthorized || failure.Status == 401:
-		failure.Status, failure.Message = 503, "upstream credentials unavailable; retry"
+		failure.Status = 503
 	case websocketRejection(envelope) == websocketRejectionModelCapacity:
 		failure.Status = 503
 	case websocketRejection(envelope) == websocketRejectionConnectionLimit:

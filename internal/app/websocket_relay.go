@@ -224,7 +224,7 @@ func (r *responsesWebSocketRelay) writeUpstream(message websocketMessage) bool {
 	if err := r.current.conn.Write(ctx, message.kind, message.data); err != nil {
 		r.logUpstreamFailure(err, "write", len(message.data))
 		observed.event(r.ctx, "upstream_write_failed", attribute.String("error_type", telemetryErrorClass(err)), attribute.Bool("possibly_transmitted", true))
-		r.closeDownstream(websocket.StatusServiceRestart, "upstream websocket unavailable")
+		r.downstream.upstreamFailed(r.ctx, err)
 		return false
 	}
 	if observed != nil {
@@ -378,7 +378,7 @@ func (r *responsesWebSocketRelay) handleUpstream(message websocketMessage) bool 
 	if message.err != nil {
 		r.logUpstreamFailure(message.err, "read", len(message.data))
 		observation(r.ctx).event(r.ctx, "upstream_closed", attribute.String("error_type", telemetryErrorClass(message.err)), attribute.Int("close_status", int(websocket.CloseStatus(message.err))))
-		r.closeDownstream(websocket.StatusServiceRestart, "upstream websocket unavailable")
+		r.downstream.upstreamFailed(r.ctx, message.err)
 		return false
 	}
 	r.lastUpstreamEvent = time.Now()

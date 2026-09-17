@@ -110,11 +110,7 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 	peer := &httpResponsesDownstream{
 		writer: w, controller: controller, request: data, stream: stream, ctx: ctx,
 		items: map[int]json.RawMessage{}, pending: map[int]bool{},
-		accounts: s.pool.all(),
-	}
-	for _, account := range peer.accounts {
-		state := account.persisted()
-		peer.secrets = append(peer.secrets, state.AccessToken, state.RefreshToken, state.IDToken)
+		responsesRedactor: s.responsesRedactor(),
 	}
 	route := websocketRouteFrom(request.Header)
 	upstreamRequest := request.Clone(ctx)
@@ -172,16 +168,15 @@ func copyHTTPResponseHeaders(dst, src http.Header) {
 }
 
 type httpResponsesDownstream struct {
-	writer       http.ResponseWriter
-	ctx          context.Context
-	controller   *http.ResponseController
-	request      []byte // read only by the downstream reader goroutine
-	stream       bool
-	committed    bool
-	finished     bool
-	sequence     int64
-	accounts     []*Account
-	secrets      []string
+	writer     http.ResponseWriter
+	ctx        context.Context
+	controller *http.ResponseController
+	request    []byte
+	stream     bool
+	committed  bool
+	finished   bool
+	sequence   int64
+	responsesRedactor
 	outputSeen   bool
 	created      responseFields
 	createdBytes int
@@ -326,8 +321,6 @@ func (d *httpResponsesDownstream) Write(ctx context.Context, _ websocket.Message
 }
 
 func (d *httpResponsesDownstream) reject(ctx context.Context, message websocketMessage, _ websocket.StatusCode, _ string) error {
-	// The WebSocket adapter suppresses retryable events in favor of 1012.
-	// HTTP clients need the actual error, not an empty successful stream.
 	return d.Write(ctx, message.kind, message.data)
 }
 

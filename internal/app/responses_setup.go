@@ -13,7 +13,8 @@ import (
 
 // Initial handshakes and first-turn model preflight use the same mapping. The
 // relay retains ownership of failed.Body until this adapter has consumed it.
-func (d *httpResponsesDownstream) setupFailed(ctx context.Context, failed *http.Response, err error) error {
+func responseSetupFailure(ctx context.Context, failed *http.Response, err error) (httpResponseFailure, http.Header) {
+	headers := http.Header{}
 	failure := httpResponseFailure{Status: 502, Code: "upstream_unavailable", Message: "upstream connection unavailable; retry with full history"}
 	if errors.Is(err, errNoAccountAvailable) || errors.Is(err, errRouteOwnerUnavailable) {
 		failure.Status, failure.Code, failure.Message = 503, "route_unavailable", "no eligible account or route owner temporarily unavailable; retry"
@@ -23,14 +24,14 @@ func (d *httpResponsesDownstream) setupFailed(ctx context.Context, failed *http.
 	}
 	var timeout net.Error
 	if errors.As(err, &timeout) && timeout.Timeout() {
-		failure.Status, failure.Code = 504, "upstream_timeout"
+		failure.Status, failure.Code, failure.Message = 504, "upstream_timeout", "upstream connection timed out"
 	}
 	var rejection *websocketSetupError
 	if errors.As(err, &rejection) {
 		details, _ := json.Marshal(rejection.details)
 		failure = responseFailure(responseFields{"error": details}, rejection.status)
-		if rejection.retryAfter != "" && !d.committed {
-			d.writer.Header().Set("Retry-After", rejection.retryAfter)
+		if rejection.retryAfter != "" {
+			headers.Set("Retry-After", rejection.retryAfter)
 		}
 	}
 	if failed != nil {
@@ -43,9 +44,7 @@ func (d *httpResponsesDownstream) setupFailed(ctx context.Context, failed *http.
 				}
 			}
 		}
-		if !d.committed {
-			copyHTTPResponseHeaders(d.writer.Header(), failed.Header)
-		}
+		copyHTTPResponseHeaders(headers, failed.Header)
 	}
 	if ctx.Err() != nil {
 		failure.Status, failure.Code, failure.Message = 503, "request_canceled", "request canceled or server shutting down"
@@ -59,6 +58,25 @@ func (d *httpResponsesDownstream) setupFailed(ctx context.Context, failed *http.
 	if mappedStatus < 400 || mappedStatus > 599 {
 		mappedStatus = 502
 	}
-	observation(ctx).event(ctx, "setup_failed", attribute.Int("upstream_status", upstreamStatus), attribute.Int("mapped_status", mappedStatus), attribute.String("error_code", failure.Code), attribute.String("retry_after", d.writer.Header().Get("Retry-After")), attribute.String("error_type", telemetryErrorClass(err)), attribute.Bool("inference_sent", false))
+	observation(ctx).event(ctx, "setup_failed", attribute.Int("upstream_status", upstreamStatus), attribute.Int("mapped_status", mappedStatus), attribute.String("error_code", failure.Code), attribute.String("retry_after", headers.Get("Retry-After")), attribute.String("error_type", telemetryErrorClass(err)), attribute.Bool("inference_sent", false))
+	failure.Status = mappedStatus
+	failure.UpstreamStatus = upstreamStatus
+	return failure, headers
+}
+
+func (d *httpResponsesDownstream) setupFailed(ctx context.Context, failed *http.Response, err error) error {
+	failure, headers := responseSetupFailure(ctx, failed, err)
+	return d.writeSetupFailure(failure, headers)
+}
+
+func (d *httpResponsesDownstream) writeSetupFailure(failure httpResponseFailure, headers http.Header) error {
+	if !d.committed {
+		redactor := d.redactor()
+		for name, values := range headers {
+			for _, value := range values {
+				d.writer.Header().Add(name, redactor.Replace(value))
+			}
+		}
+	}
 	return d.fail(failure)
 }

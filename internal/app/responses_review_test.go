@@ -125,6 +125,10 @@ func TestResponsesFailedModelPreflight(t *testing.T) {
 					conn, _ := dialWebSocket(t, proxy.URL, headers)
 					defer conn.CloseNow()
 					writeWebSocketEvent(t, conn, map[string]string{"type": "response.create", "model": "m"})
+					failure := readWebSocketFailure(t, conn, test.code)
+					if !test.timeout && websocketEventHeaders(failure.Headers).Get("Retry-After") != "17" {
+						t.Fatalf("missing retry delay: %+v", failure)
+					}
 					readCloseStatus(t, conn, websocket.StatusTryAgainLater)
 				} else {
 					resp := postResponse(t, proxy.URL, fmt.Sprintf(`{"model":"m","stream":%t}`, mode == "sse"), headers)
@@ -219,7 +223,7 @@ func TestHTTPResponsesDecodedCredentialRedaction(t *testing.T) {
 func TestResponseRedactionPreservesNonStringBytes(t *testing.T) {
 	const input = `{"token-\u0061":["token-a","token-\u0061","\"token-\u0061\""],"n":9007199254740993,"f":-0.001230000000000000000005e+17,"safe":"line\nquote\"slash\\"}`
 	const want = `{"[redacted]":["[redacted]","[redacted]","\"[redacted]\""],"n":9007199254740993,"f":-0.001230000000000000000005e+17,"safe":"line\nquote\"slash\\"}`
-	peer := &httpResponsesDownstream{secrets: []string{"token-a"}}
+	peer := &httpResponsesDownstream{responsesRedactor: responsesRedactor{secrets: []string{"token-a"}}}
 	if got := string(peer.redact([]byte(input))); got != want {
 		t.Fatalf("got %s\nwant %s", got, want)
 	}

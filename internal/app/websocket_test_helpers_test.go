@@ -127,6 +127,7 @@ func newWebSocketUpstream(t *testing.T, respond func(string, *websocket.Conn, we
 			return
 		}
 		defer conn.CloseNow()
+		conn.SetReadLimit(maxWebSocketMessage)
 		account := r.Header.Get("chatgpt-account-id")
 		upstream.mu.Lock()
 		upstream.connections = append(upstream.connections, account)

@@ -275,7 +275,11 @@ func TestUpstreamWebSocketFailureLogsMetadataWithoutReason(t *testing.T) {
 	if event := readWebSocketEvent(t, conn); event.Type != "response.created" {
 		t.Fatal(event.Type)
 	}
-	readCloseStatus(t, conn, websocket.StatusServiceRestart)
+	failure := readWebSocketFailure(t, conn, "upstream_websocket_closed")
+	if !strings.Contains(failure.Error.Message, "SECRET_UPSTREAM_REASON") {
+		t.Fatal("upstream close reason lost")
+	}
+	readCloseStatus(t, conn, websocket.StatusPolicyViolation)
 	assertHTTPClean(t, srv)
 	found := false
 	for _, line := range strings.Split(logs.String(), "\n") {

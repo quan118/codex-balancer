@@ -19,18 +19,14 @@ type responsesDownstream interface {
 	prepare(websocketMessage) (websocketMessage, error)
 	reject(context.Context, websocketMessage, websocket.StatusCode, string) error
 	setupFailed(context.Context, *http.Response, error) error
+	upstreamFailed(context.Context, error) error
 }
 
-type websocketDownstream struct{ *websocket.Conn }
+type websocketDownstream struct {
+	*websocket.Conn
+	responsesRedactor
+}
 
 func (d websocketDownstream) prepare(message websocketMessage) (websocketMessage, error) {
 	return message, nil
-}
-
-func (d websocketDownstream) setupFailed(_ context.Context, _ *http.Response, _ error) error {
-	return d.Close(websocket.StatusTryAgainLater, "no account supports requested model")
-}
-
-func (d websocketDownstream) reject(_ context.Context, _ websocketMessage, status websocket.StatusCode, reason string) error {
-	return d.Close(status, reason)
 }

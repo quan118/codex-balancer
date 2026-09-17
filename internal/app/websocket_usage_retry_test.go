@@ -32,6 +32,7 @@ func TestWebSocketUsageRetryRequiresFullReplayBeforeAcceptingReplacement(t *test
 				completeWebSocketTurn(t, first, map[string]any{"type": "response.create", "generate": false, "input": []any{}})
 			}
 			writeWebSocketEvent(t, first, map[string]any{"type": "response.create", "previous_response_id": "old-response", "input": []any{}})
+			readWebSocketFailure(t, first, "usage_limit_reached")
 			readCloseStatus(t, first, websocket.StatusServiceRestart)
 			if !a.routingCandidate().spent || server.stats.snapshot().Limited != 1 {
 				t.Fatal("usage rejection did not mark the owner spent")
@@ -162,7 +163,7 @@ func TestWebSocketReplacementRejectsTurnStateHeaderBeforeUpstreamHandshake(t *te
 		conn.CloseNow()
 		t.Fatal("account-bound handshake succeeded")
 	}
-	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+	if resp == nil || resp.StatusCode != http.StatusConflict {
 		t.Fatalf("response = %v", resp)
 	}
 	if got := fmt.Sprint(upstream.ConnectionAccounts()); got != "[account-a]" {

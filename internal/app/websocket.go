@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,8 +15,6 @@ import (
 )
 
 const responsesWebSocketBeta = "responses_websockets=2026-02-06"
-
-const noAccountAvailableMessage = "WE ARE OUT OF TOKENS 😭 Go out, touch some grass 🌿 See http://127.0.0.1:8317/dashboard"
 
 var (
 	errNoAccountAvailable    = errors.New("no account available")
@@ -181,24 +178,14 @@ func (s *server) responsesWebSocket(w http.ResponseWriter, r *http.Request) {
 	route := websocketRouteFrom(r.Header)
 	thread := route.key()
 	s.log.Debug("websocket requested", "thread", thread)
+	redactor := s.responsesRedactor()
 	dial, failed, err := s.dialResponsesWebSocket(r, route, "", "")
-	if err != nil {
-		message := err.Error()
-		if errors.Is(err, errNoAccountAvailable) {
-			message = noAccountAvailableMessage
-		}
-		s.logResponseRejection(w, r, http.StatusServiceUnavailable, "upstream_setup_failed")
-		writeError(w, http.StatusServiceUnavailable, message)
-		return
-	}
-	if failed != nil {
-		s.logResponseRejection(w, r, failed.StatusCode, "upstream_handshake_rejected")
-		copyWebSocketHeaders(w.Header(), failed.Header)
-		w.WriteHeader(failed.StatusCode)
-		if failed.Body != nil {
-			defer failed.Body.Close()
-			io.Copy(w, failed.Body)
-		}
+	if err != nil || failed != nil {
+		defer closeWebSocketResponse(failed)
+		peer := &httpResponsesDownstream{writer: w, controller: http.NewResponseController(w), ctx: r.Context(), responsesRedactor: redactor}
+		failure, headers := responseSetupFailure(r.Context(), failed, err)
+		s.logResponseRejection(w, r, failure.Status, "upstream_setup_failed")
+		peer.writeSetupFailure(failure, headers)
 		return
 	}
 	if dial.resp != nil {
@@ -214,7 +201,7 @@ func (s *server) responsesWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer downstream.CloseNow()
 	downstream.SetReadLimit(maxWebSocketMessage)
 	dial.conn.SetReadLimit(maxWebSocketMessage)
-	newResponsesWebSocketRelay(s, websocketDownstream{downstream}, r, dial, route, apiKey, mode, changed).run()
+	newResponsesWebSocketRelay(s, websocketDownstream{Conn: downstream, responsesRedactor: redactor}, r, dial, route, apiKey, mode, changed).run()
 }
 
 func (s *server) websocketHandshake(w http.ResponseWriter, r *http.Request) bool {

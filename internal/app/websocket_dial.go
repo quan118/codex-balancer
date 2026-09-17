@@ -326,6 +326,7 @@ func (d *responsesWebSocketDialer) handleFailure(result upstreamWebSocketDial, a
 }
 
 func (d *responsesWebSocketDialer) refreshAfterUnauthorized(response *http.Response, account *Account, retained bool) error {
+	d.lastRejection = &websocketSetupError{status: response.StatusCode, details: responseError(response), retryAfter: response.Header.Get("Retry-After")}
 	closeWebSocketResponse(response)
 	id := account.id()
 	d.reauthed[id] = true
@@ -333,7 +334,7 @@ func (d *responsesWebSocketDialer) refreshAfterUnauthorized(response *http.Respo
 		return nil
 	}
 	if retained {
-		return errRouteOwnerUnavailable
+		return d.unavailable(errRouteOwnerUnavailable)
 	}
 	d.skip[id] = true
 	return nil

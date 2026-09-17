@@ -296,13 +296,14 @@ balancer does not add a second reconnect path.
 - For a handshake network error or `5xx`, return that attempt without an
   internal retry loop. Codex owns its reconnect policy.
 - For handshake `401`, refresh the same account once before routing elsewhere.
-  For an event-level `401`, forward the original event, refresh the same account
-  once, then retire the socket. A permanent failure marks the account signed
-  out and preserves its owner boundary for a portable reconnect.
-- For a structured `server_is_overloaded` or `slow_down` event, suppress the
-  terminal event, preserve the accepted or provisional owner, and close the
-  downstream socket with `1012`. Codex reconnects and replays the request to
-  the same account. The balancer neither replays the request nor marks the
+  For an event-level `401`, refresh the same account once, send a retryable
+  error containing the upstream details, then retire the socket. A permanent
+  failure marks the account signed out and preserves its owner boundary for a
+  portable reconnect.
+- For a structured `server_is_overloaded` or `slow_down` event, send a retryable
+  error containing the upstream details, preserve the accepted or provisional
+  owner, and close the downstream socket with `1012`. Codex reconnects and
+  replays the request to the same account. The balancer neither replays the request nor marks the
   account spent or cooling.
 - For transient `429`, forward the original event, cool down the account, and
   retire the socket. The balancer does not replay the request.
@@ -310,7 +311,8 @@ balancer does not add a second reconnect path.
   session identity, exactly one request is pending,
   it has not received `response.created`, no turn-state token was sent in its
   metadata or either side of the handshake, and another eligible account can
-  serve its model and tier, suppress the terminal event and close with `1012`.
+  serve its model and tier, send a retryable error containing the upstream
+  details and close with `1012`.
   Preserve the prior owner boundary, including unaccepted provisional claims.
   Codex app-server (also used by Paseo) can then reconnect and replay full
   history, including encrypted reasoning, without an old response ID.
@@ -326,6 +328,21 @@ balancer does not add a second reconnect path.
 - For an account-specific setup failure, try another eligible account if the
   retained owner cannot continue and no provisional claim conflicts.
 - The balancer does not replay in-flight work.
+- Upstream WebSocket closes produce a typed error with the original close code
+  and reason. Code `1009` becomes `request_too_large`, with guidance to compact
+  the session or reduce images. Protocol, payload, and policy rejections are
+  permanent request errors. Transport failures remain retryable.
+- WebSocket recovery errors use `type: error`, `status: 502`, and
+  `retryable: true`. The nested `error` retains the upstream code, type, message,
+  parameter, and extra fields. `upstream_type` and, when supplied,
+  `upstream_status` retain the original event classification. This lets Codex
+  report the cause while retaining its existing reconnect and replay behavior.
+- Permanent WebSocket request failures use `status: 400` because Codex treats
+  other HTTP error statuses, including `413`, as retryable. The error code and
+  `upstream_close_status` preserve the size or protocol failure. Setup errors
+  retain the upstream HTTP status in `upstream_status` and preserve `Retry-After`.
+- Newly surfaced error messages redact known account credentials. Raw upstream
+  close reasons remain excluded from logs.
 
 ## HTTP execution and errors
 
@@ -386,6 +403,8 @@ still cannot move accounts, in either handshake headers or client metadata.
 | Capacity, connection rollover, upstream credential rejection | 503 | Preserve typed error; client owns retries. |
 | Account invalidation / fast-mode change | 503 | Typed `route_unavailable` / `policy_changed` error. |
 | Account-bound move | 409 JSON error | Typed error, never transmit bound input to replacement. |
+| Upstream WebSocket `1009` | 413 `request_too_large` | Typed error with close code and reason; never synthesize completion. |
+| Upstream protocol, payload, or policy rejection | 400 | Typed error with close code and reason. |
 | Malformed/binary frame, missing/oversized output or premature EOF | 502 | Typed error; never synthesize completion. |
 | Upstream handshake or event idle timeout | 504 | Typed `upstream_timeout` error. |
 
@@ -395,8 +414,11 @@ success. Initial setup and first-turn model-preflight failures use the same
 semantic error mapping, preserving error codes and `Retry-After`; a recognized
 403 usage-limit rejection becomes 429. Existing safe account-setup retries and
 same-account credential refresh still apply.
-When WebSocket clients would receive only a reconnect close (capacity or safe
-usage-limit recovery), HTTP clients instead receive the original typed failure.
+For capacity or safe usage-limit recovery, WebSocket clients receive a retryable
+error before the reconnect close. HTTP clients receive the original typed failure
+with the HTTP status from the table above. Upstream credential errors keep their
+original message while using `503` to distinguish pool credentials from the
+client's balancer API key.
 Once any SSE event is flushed, the adapter never attempts another HTTP status or
 appends a plain JSON error body. Unknown valid events are forwarded as events;
 normal terminal handling closes promptly even if upstream leaves the socket open.

@@ -854,6 +854,7 @@ func TestWebSocketExhaustedOwnerMovesTheNextEncryptedFullReplayAndRebinds(t *tes
 	first.CloseNow()
 	exhausted, _ := dialWebSocket(t, proxy.URL, headers)
 	writeWebSocketEvent(t, exhausted, map[string]any{"type": "response.create", "input": []any{}})
+	readWebSocketFailure(t, exhausted, "usage_limit_reached")
 	readCloseStatus(t, exhausted, websocket.StatusServiceRestart)
 	exhausted.CloseNow()
 
@@ -1178,7 +1179,7 @@ func TestWebSocketConnectionLimitReconnectsSameAccountWithoutCooldown(t *testing
 	}
 }
 
-func TestWebSocketInBandUnauthorizedRefreshesARejectedTokenOnceWithoutForwarding(t *testing.T) {
+func TestWebSocketInBandUnauthorizedRefreshesARejectedTokenOnceWithDetails(t *testing.T) {
 	refreshCalls := useOAuthRefreshServer(t)
 	unauthorized := map[string]any{"type": "error", "status": http.StatusUnauthorized, "error": map[string]any{"code": "unauthorized"}}
 	upstream := newWebSocketUpstream(t, func(_ string, conn *websocket.Conn, _ websocketEnvelope) {
@@ -1194,7 +1195,9 @@ func TestWebSocketInBandUnauthorizedRefreshesARejectedTokenOnceWithoutForwarding
 
 	writeWebSocketEvent(t, first, map[string]any{"type": "response.create", "input": []any{}})
 	writeWebSocketEvent(t, second, map[string]any{"type": "response.create", "input": []any{}})
+	readWebSocketFailure(t, first, "unauthorized")
 	readCloseStatus(t, first, websocket.StatusServiceRestart)
+	readWebSocketFailure(t, second, "unauthorized")
 	readCloseStatus(t, second, websocket.StatusServiceRestart)
 	if calls := refreshCalls(); calls != 1 {
 		t.Fatalf("refresh calls = %d, want one refresh for the rejected token revision", calls)
@@ -1298,7 +1301,7 @@ func TestWebSocketUnreachableUpstreamDoesNotPenalizeAccounts(t *testing.T) {
 	if err == nil {
 		t.Fatal("dial succeeded")
 	}
-	if response == nil || response.StatusCode != http.StatusServiceUnavailable {
+	if response == nil || response.StatusCode != http.StatusBadGateway {
 		t.Fatalf("response = %+v", response)
 	}
 	for _, account := range []*Account{a, b} {
@@ -1378,6 +1381,7 @@ func TestWebSocketCapacityFailureRestartsOnRetainedAccount(t *testing.T) {
 			if event := readWebSocketEvent(t, first); event.Type != "response.created" {
 				t.Fatalf("first event = %q, want response.created", event.Type)
 			}
+			readWebSocketFailure(t, first, code)
 			readCloseStatus(t, first, websocket.StatusServiceRestart)
 			first.CloseNow()
 
@@ -1422,6 +1426,7 @@ func TestWebSocketCapacityErrorRetainsProvisionalAccount(t *testing.T) {
 
 	first, _ := dialWebSocket(t, proxy.URL, headers)
 	writeWebSocketEvent(t, first, map[string]any{"type": "response.create", "input": []any{}})
+	readWebSocketFailure(t, first, "server_is_overloaded")
 	readCloseStatus(t, first, websocket.StatusServiceRestart)
 	first.CloseNow()
 	owners, err := server.pool.store.routeOwners("thread", "session")
@@ -1453,6 +1458,7 @@ func TestWebSocketUpstreamTransportLossRestartsDownstream(t *testing.T) {
 	conn, _ := dialWebSocket(t, proxy.URL, nil)
 	defer conn.CloseNow()
 	writeWebSocketEvent(t, conn, map[string]any{"type": "response.create", "input": []any{}})
+	readWebSocketFailure(t, conn, "upstream_disconnected")
 	readCloseStatus(t, conn, websocket.StatusServiceRestart)
 }
 
