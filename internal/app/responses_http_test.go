@@ -150,8 +150,6 @@ func TestHTTPResponsesRequestGuards(t *testing.T) {
 		{"max fractional", `{"model":"m","max_output_tokens":4.2}`, "", "", 400},
 		{"temperature range", `{"model":"m","temperature":-1}`, "", "", 400},
 		{"top p range", `{"model":"m","top_p":2}`, "", "", 400},
-		{"instruction image", `{"model":"m","input":[{"role":"system","content":[{"type":"input_image","image_url":"data:..."}]}]}`, "", "", 400},
-		{"instruction extra semantics", `{"model":"m","input":[{"role":"system","content":[{"type":"input_text","text":"hi","prompt_cache_breakpoint":{}}]}]}`, "", "", 400},
 		{"metadata type", `{"model":"m","client_metadata":{"x":{}}}`, "", "", 400},
 		{"gzip", `{"model":"m"}`, "gzip", "", 415},
 		{"media type", `{"model":"m"}`, "", "text/plain", 415},
@@ -264,13 +262,13 @@ func TestHTTPResponsesLosslessTranslation(t *testing.T) {
 	}
 	before, _ := responseObject([]byte(body))
 	after, _ := responseObject(<-captured)
-	if got, _ := responseString(after["instructions"]); got != "explicit\n\nfirst\n\nsecond\n\nthird" {
+	if got, _ := responseString(after["instructions"]); got != "explicit" {
 		t.Fatalf("instructions=%q", got)
 	}
 	var original, translated []json.RawMessage
 	json.Unmarshal(before["input"], &original)
 	json.Unmarshal(after["input"], &translated)
-	if !reflect.DeepEqual(original[2:], translated) {
+	if !reflect.DeepEqual(original, translated) {
 		t.Fatalf("input changed: %s", after["input"])
 	}
 	for _, key := range []string{"model", "tools", "text", "reasoning", "include", "service_tier", "prompt_cache_key", "client_metadata", "metadata", "unknown"} {
@@ -287,6 +285,35 @@ func TestHTTPResponsesLosslessTranslation(t *testing.T) {
 		t.Fatal("invalid upstream controls")
 	}
 	assertHTTPClean(t, srv)
+}
+
+func TestHTTPResponsesLiftsInstructionsOnlyWithoutExplicitInstructions(t *testing.T) {
+	for _, test := range []struct {
+		name, body, instructions, input string
+	}{
+		{"lifted", `{"model":"m","input":[{"role":"system","content":"first"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"second"}]},{"role":"user","content":"hello"},{"role":"developer","content":"later"}]}`, "first\n\nsecond", `[{"role":"user","content":"hello"},{"role":"developer","content":"later"}]`},
+		{"explicit instructions keep developer items", `{"model":"m","instructions":"explicit","input":[{"role":"developer","content":"context","internal_chat_message_metadata_passthrough":{"content_item_kinds":["environment_context"]}},{"role":"user","content":"hello"}]}`, "explicit", `[{"role":"developer","content":"context","internal_chat_message_metadata_passthrough":{"content_item_kinds":["environment_context"]}},{"role":"user","content":"hello"}]`},
+		{"extra field stops lifting", `{"model":"m","input":[{"role":"system","content":"first"},{"role":"developer","content":"second","phase":"commentary"},{"role":"user","content":"hello"}]}`, "first", `[{"role":"developer","content":"second","phase":"commentary"},{"role":"user","content":"hello"}]`},
+		{"image content stops lifting", `{"model":"m","input":[{"role":"system","content":[{"type":"input_image","image_url":"data:..."}]},{"role":"user","content":"hello"}]}`, "", `[{"role":"system","content":[{"type":"input_image","image_url":"data:..."}]},{"role":"user","content":"hello"}]`},
+		{"annotated text stops lifting", `{"model":"m","input":[{"role":"system","content":[{"type":"input_text","text":"hi","prompt_cache_breakpoint":{}}]}]}`, "", `[{"role":"system","content":[{"type":"input_text","text":"hi","prompt_cache_breakpoint":{}}]}]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data, _, err := translateHTTPResponse([]byte(test.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields, _ := responseObject(data)
+			if got, _ := responseString(fields["instructions"]); got != test.instructions {
+				t.Fatalf("instructions=%q want %q", got, test.instructions)
+			}
+			var want, got []json.RawMessage
+			json.Unmarshal([]byte(test.input), &want)
+			json.Unmarshal(fields["input"], &got)
+			if !reflect.DeepEqual(want, got) {
+				t.Fatalf("input=%s want %s", fields["input"], test.input)
+			}
+		})
+	}
 }
 
 func TestHTTPResponsesStringAndEmptyInput(t *testing.T) {

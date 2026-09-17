@@ -143,7 +143,7 @@ func translateHTTPResponse(data []byte) ([]byte, bool, error) {
 			return nil, false, errors.New("input must be a string or item array")
 		}
 	}
-	leading := true
+	lifting := fields["instructions"] == nil
 	remaining := make([]json.RawMessage, 0, len(input))
 	for _, raw := range input {
 		item, err := responseObject(raw)
@@ -178,20 +178,13 @@ func translateHTTPResponse(data []byte) ([]byte, bool, error) {
 				}
 			}
 		}
-		if leading && (kind == "" || kind == "message") && (role == "system" || role == "developer") {
-			for key := range item {
-				if key != "type" && key != "role" && key != "content" {
-					return nil, false, fmt.Errorf("cannot lift instruction message field %q without losing semantics", key)
-				}
+		if lifting && (kind == "" || kind == "message") && (role == "system" || role == "developer") {
+			if text, ok := liftableInstruction(item); ok {
+				instructions = append(instructions, text)
+				continue
 			}
-			text, err := instructionText(item["content"])
-			if err != nil {
-				return nil, false, err
-			}
-			instructions = append(instructions, text)
-			continue
 		}
-		leading = false
+		lifting = false
 		remaining = append(remaining, raw)
 	}
 	fields["input"], _ = json.Marshal(remaining)
@@ -216,6 +209,16 @@ func translateHTTPResponse(data []byte) ([]byte, bool, error) {
 		return nil, false, errors.New("invalid routing fields: reasoning, service_tier or client_metadata")
 	}
 	return result, stream, nil
+}
+
+func liftableInstruction(item responseFields) (string, bool) {
+	for key := range item {
+		if key != "type" && key != "role" && key != "content" {
+			return "", false
+		}
+	}
+	text, err := instructionText(item["content"])
+	return text, err == nil
 }
 
 func instructionText(raw json.RawMessage) (string, error) {
