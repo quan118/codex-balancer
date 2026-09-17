@@ -22,6 +22,20 @@ HTTP POST at `/v1/responses`, `/codex/responses` and `/v1/codex/responses`. All
 three paths share the same adapters, admission gate and account-routing policy;
 there is no account-specific route.
 
+## Tool endpoints
+
+Codex calls standalone web search (`/v1/alpha/search`, used with responses-lite
+models) and image generation (`/v1/images/generations`, `/v1/images/edits`) on
+the provider base URL. The balancer proxies each as one unary POST with a pool
+account's bearer and account ID, forwarding the same vetted request headers as
+HTTP inference. These calls carry no conversation state, so they use fresh
+placement without claims or affinity, skipping accounts that do not carry the
+requested model. A `401` refreshes the account once; a usage limit marks it
+spent and a transient `429` cools it, and the next eligible account is tried.
+When every account rejects the call, the client receives the last upstream
+rejection with its status, `Retry-After` and redacted body. Request bodies are
+capped at 16 MiB and responses stream through unchanged.
+
 ## Fresh placement
 
 For a session tree with neither an accepted route nor a provisional claim, the

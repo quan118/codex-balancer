@@ -163,6 +163,10 @@ func (s *server) routes() http.Handler {
 		mux.Handle(path, methodRejected)
 	}
 	mux.HandleFunc("GET /v1/models", s.models)
+	tools := s.admitted(s.proxyTool)
+	for _, path := range toolEndpoints {
+		mux.Handle("POST "+path, tools)
+	}
 	return mux
 }
 

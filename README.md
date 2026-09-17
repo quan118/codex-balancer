@@ -25,6 +25,7 @@ The server runs at http://127.0.0.1:8317
 
 - `/v1/responses` — HTTP `POST` (SSE or JSON) and WebSocket `GET`
 - `/codex/responses` and `/v1/codex/responses` — equivalent HTTP `POST` and WebSocket `GET` aliases for pi
+- `/v1/alpha/search`, `/v1/images/generations` and `/v1/images/edits` — unary `POST` proxies for Codex's standalone web search and image tools, sent with a pool account's credentials
 - `/dashboard` — HTML dashboard
 - `/stats` — JSON stats of the server
 - `/accounts` — add an account. On a real server, send this to your friends so they join the pool without exposing credentials.
