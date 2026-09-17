@@ -52,6 +52,10 @@ func (d websocketDownstream) upstreamFailed(ctx context.Context, err error) erro
 	return d.writeFailure(ctx, failure, nil, status)
 }
 
+func (d websocketDownstream) requestFailed(ctx context.Context, failure httpResponseFailure, status websocket.StatusCode) error {
+	return d.writeFailure(ctx, failure, nil, status)
+}
+
 func (d websocketDownstream) setupFailed(ctx context.Context, failed *http.Response, err error) error {
 	failure, headers := responseSetupFailure(ctx, failed, err)
 	return d.writeFailure(ctx, failure, headers, websocket.StatusTryAgainLater)

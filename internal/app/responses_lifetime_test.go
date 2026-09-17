@@ -137,12 +137,12 @@ func TestHTTPResponsesModelTierRetentionAndTurnState(t *testing.T) {
 	b.markSpent()
 	headers.Set(codexTurnStateKey, "old-state")
 	resp = postResponse(t, proxy.URL, `{"model":"m"}`, headers)
-	if body := readHTTPBody(t, resp); resp.StatusCode != 409 {
-		t.Fatalf("moved turn header: %s", body)
+	if body := readHTTPBody(t, resp); resp.StatusCode != 400 || !strings.Contains(body, "account_bound_request") {
+		t.Fatalf("moved turn header: %d %s", resp.StatusCode, body)
 	}
 	headers.Del(codexTurnStateKey)
 	resp = postResponse(t, proxy.URL, `{"model":"m","client_metadata":{"x-codex-turn-state":"old-state"}}`, headers)
-	if body := readHTTPBody(t, resp); resp.StatusCode != 409 {
+	if body := readHTTPBody(t, resp); resp.StatusCode != 400 || !strings.Contains(body, "account_bound_request") {
 		t.Fatalf("moved metadata: %d %s", resp.StatusCode, body)
 	}
 	resp = postResponse(t, proxy.URL, `{"model":"m","input":[{"type":"reasoning","encrypted_content":"portable","summary":[]}]}`, headers)

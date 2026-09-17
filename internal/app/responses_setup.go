@@ -20,7 +20,7 @@ func responseSetupFailure(ctx context.Context, failed *http.Response, err error)
 		failure.Status, failure.Code, failure.Message = 503, "route_unavailable", "no eligible account or route owner temporarily unavailable; retry"
 	}
 	if errors.Is(err, errAccountBoundTurn) {
-		failure.Status, failure.Code, failure.Message = 409, "account_bound_request", errAccountBoundTurn.Error()
+		failure = httpResponseFailure{Status: 400, Code: "account_bound_request", Type: "invalid_request_error", Message: errAccountBoundTurn.Error()}
 	}
 	var timeout net.Error
 	if errors.As(err, &timeout) && timeout.Timeout() {

@@ -139,7 +139,7 @@ func TestWebSocketSpentOwnerRejectsPreviousResponseBeforeAccountMove(t *testing.
 		"previous_response_id": "response-owner",
 		"input":                []any{},
 	})
-	readCloseStatus(t, second, websocket.StatusTryAgainLater)
+	readAccountBoundRefusal(t, second)
 	if got := fmt.Sprint(upstream.RequestAccounts()); got != "[account-owner]" {
 		t.Fatalf("request accounts = %s, want account-bound response state withheld from the fresh account", got)
 	}
@@ -339,7 +339,7 @@ func TestWebSocketAccountInvalidationPreservesAMoveBarrierUntilReplacementAccept
 		"client_metadata": map[string]string{codexTurnStateKey: "account-a-state"},
 		"input":           []any{},
 	})
-	readCloseStatus(t, bound, websocket.StatusTryAgainLater)
+	readAccountBoundRefusal(t, bound)
 	bound.CloseNow()
 	if got := fmt.Sprint(upstream.RequestAccounts()); got != "[]" {
 		t.Fatalf("request accounts after account-bound reconnect = %s, want no cross-account request", got)
@@ -575,7 +575,7 @@ func TestWebSocketSpentOwnerRejectsTurnStateBeforeAccountMove(t *testing.T) {
 		"client_metadata": map[string]string{codexTurnStateKey: "state-from-owner"},
 		"input":           []any{},
 	})
-	readCloseStatus(t, second, websocket.StatusTryAgainLater)
+	readAccountBoundRefusal(t, second)
 	if got := fmt.Sprint(upstream.RequestAccounts()); got != "[account-owner]" {
 		t.Fatalf("request accounts = %s, want per-turn state withheld from a different account", got)
 	}
@@ -750,7 +750,7 @@ func TestWebSocketAccountBoundFrameDoesNotMoveForModelCompatibility(t *testing.T
 		"previous_response_id": "response-owner",
 		"input":                []any{},
 	})
-	readCloseStatus(t, second, websocket.StatusTryAgainLater)
+	readAccountBoundRefusal(t, second)
 	if got := fmt.Sprint(upstream.RequestAccounts()); got != "[account-owner]" {
 		t.Fatalf("request accounts = %s, want account-bound state rejected before a model-driven switch", got)
 	}
@@ -1552,6 +1552,15 @@ func readCloseStatus(t *testing.T, conn *websocket.Conn, want websocket.StatusCo
 	if got := websocket.CloseStatus(err); got != want {
 		t.Fatalf("close status = %d, error = %v, want %d", got, err, want)
 	}
+}
+
+func readAccountBoundRefusal(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	event := readWebSocketFailure(t, conn, "account_bound_request")
+	if event.Status != 400 || event.Error.Type != "invalid_request_error" {
+		t.Fatalf("account-bound refusal = %+v, want a permanent 400", event)
+	}
+	readCloseStatus(t, conn, websocket.StatusTryAgainLater)
 }
 
 func waitForWebSocketCounts(t *testing.T, server *server, want map[string]int64) {

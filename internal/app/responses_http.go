@@ -324,6 +324,10 @@ func (d *httpResponsesDownstream) reject(ctx context.Context, message websocketM
 	return d.Write(ctx, message.kind, message.data)
 }
 
+func (d *httpResponsesDownstream) requestFailed(_ context.Context, failure httpResponseFailure, _ websocket.StatusCode) error {
+	return d.fail(failure)
+}
+
 func (d *httpResponsesDownstream) Close(status websocket.StatusCode, reason string) error {
 	failure := httpResponseFailure{Status: 502, Code: "upstream_disconnected", Message: reason}
 	switch {
@@ -332,7 +336,7 @@ func (d *httpResponsesDownstream) Close(status websocket.StatusCode, reason stri
 	case strings.Contains(reason, "fast mode"):
 		failure.Status, failure.Code = 503, "policy_changed"
 	case strings.Contains(reason, "account-bound"):
-		failure.Status, failure.Code = 409, "account_bound_request"
+		failure.Status, failure.Code, failure.Type = 400, "account_bound_request", "invalid_request_error"
 	case strings.Contains(reason, "account") || strings.Contains(reason, "route owner"):
 		failure.Status, failure.Code = 503, "route_unavailable"
 	case strings.Contains(reason, "canceled"):

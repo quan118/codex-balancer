@@ -139,7 +139,10 @@ The server records the account from each `response.created` event. A
   owner permits replacement on reconnect.
 - A replacement request must omit `previous_response_id` and
   `x-codex-turn-state`. Encrypted reasoning does not bind a full replay to its
-  prior account. The relay forwards it unchanged.
+  prior account. The relay forwards it unchanged. A bound request on a moved
+  socket receives a typed `400` `account_bound_request` error before the
+  `1013` close, so Codex fails that turn at once instead of replaying the
+  same token through its retry budget and HTTP fallback.
 - A replacement account takes ownership after `response.created`. Recovery of
   the old owner's quota leaves the new route in place.
 - SQLite accepted-attempt records and provisional invalidation tombstones
@@ -405,7 +408,7 @@ still cannot move accounts, in either handshake headers or client metadata.
 | Rate/usage limit | 429 | Preserve typed error; shared quota/cooldown rules apply. |
 | Capacity, connection rollover, upstream credential rejection | 503 | Preserve typed error; client owns retries. |
 | Account invalidation / fast-mode change | 503 | Typed `route_unavailable` / `policy_changed` error. |
-| Account-bound move | 409 JSON error | Typed error, never transmit bound input to replacement. |
+| Account-bound move | 400 `account_bound_request` | Typed error, never transmit bound input to replacement. |
 | Upstream WebSocket `1009` | 413 `request_too_large` | Typed error with close code and reason; never synthesize completion. |
 | Upstream protocol, payload, or policy rejection | 400 | Typed error with close code and reason. |
 | Malformed/binary frame, missing/oversized output or premature EOF | 502 | Typed error; never synthesize completion. |

@@ -18,6 +18,7 @@ type responsesDownstream interface {
 	Close(websocket.StatusCode, string) error
 	prepare(websocketMessage) (websocketMessage, error)
 	reject(context.Context, websocketMessage, websocket.StatusCode, string) error
+	requestFailed(context.Context, httpResponseFailure, websocket.StatusCode) error
 	setupFailed(context.Context, *http.Response, error) error
 	upstreamFailed(context.Context, error) error
 }

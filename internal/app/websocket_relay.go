@@ -168,6 +168,13 @@ func (r *responsesWebSocketRelay) closeDownstream(status websocket.StatusCode, r
 	}
 }
 
+func (r *responsesWebSocketRelay) refuseTurn(status websocket.StatusCode, failure httpResponseFailure) {
+	observation(r.ctx).event(r.ctx, "relay_close", attribute.Int("websocket_close_status", int(status)), attribute.String("reason", failure.Code), attribute.String("retry_owner", "client"), attribute.Bool("inference_replayed", false))
+	if err := r.downstream.requestFailed(r.ctx, failure, status); err != nil && !errors.Is(err, errResponseFinished) {
+		r.server.log.Debug("downstream request refusal failed", "thread", r.thread, "status", status, "error", err)
+	}
+}
+
 func (r *responsesWebSocketRelay) switchAccount(next *websocketDial, model, serviceTier string) bool {
 	previous := r.current
 	if previous.claim != nil {
@@ -291,7 +298,7 @@ func (r *responsesWebSocketRelay) handleResponseCreate(message websocketMessage,
 	allowed := r.server.allowedAccounts(event.Model, event.ServiceTier)
 	observation(r.ctx).event(r.ctx, "turn_preflight", attribute.String("account", r.current.account.id()), attribute.Bool("pinned", r.pinned), attribute.Bool("account_move", r.current.moved), attribute.Bool("model_tier_allowed", accountAllowed(allowed, r.current.account.id())), attribute.Bool("catalog_filter_active", allowed != nil), attribute.Bool("portable_frame", websocketRequestPortable(event)), attribute.Bool("turn_state_header_present", strings.TrimSpace(r.request.Header.Get(codexTurnStateKey)) != ""))
 	if (r.current.moved || !accountAllowed(allowed, r.current.account.id())) && !websocketRequestPortable(event) {
-		r.closeDownstream(websocket.StatusTryAgainLater, "account-bound turn cannot move accounts")
+		r.refuseTurn(websocket.StatusTryAgainLater, httpResponseFailure{Status: 400, Code: "account_bound_request", Type: "invalid_request_error", Message: errAccountBoundTurn.Error()})
 		return false
 	}
 	if !r.ensureCompatibleAccount(event, allowed) {

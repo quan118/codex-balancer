@@ -41,7 +41,7 @@ func TestWebSocketUsageRetryRequiresFullReplayBeforeAcceptingReplacement(t *test
 			// that fails to discard its response ID cannot leak it to account B.
 			invalid, _ := dialWebSocket(t, proxy.URL, headers)
 			writeWebSocketEvent(t, invalid, map[string]any{"type": "response.create", "previous_response_id": "old-response", "input": []any{}})
-			readCloseStatus(t, invalid, websocket.StatusTryAgainLater)
+			readAccountBoundRefusal(t, invalid)
 			invalid.CloseNow()
 			for _, account := range upstream.RequestAccounts() {
 				if account != "account-a" {
@@ -163,7 +163,7 @@ func TestWebSocketReplacementRejectsTurnStateHeaderBeforeUpstreamHandshake(t *te
 		conn.CloseNow()
 		t.Fatal("account-bound handshake succeeded")
 	}
-	if resp == nil || resp.StatusCode != http.StatusConflict {
+	if resp == nil || resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("response = %v", resp)
 	}
 	if got := fmt.Sprint(upstream.ConnectionAccounts()); got != "[account-a]" {
