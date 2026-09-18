@@ -160,7 +160,7 @@ func (s *server) forwardHTTPResponse(peer *httpResponsesDownstream, request *htt
 	mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if mediaType == "application/json" {
 		err = s.deliverHTTPJSON(peer, accounting, response.Body)
-	} else if mediaType == "text/event-stream" {
+	} else if mediaType == "text/event-stream" || response.Header.Get("Content-Type") == "" {
 		err = readResponseSSE(response.Body, func(data []byte) error { return s.deliverHTTPEvent(peer, accounting, data) })
 	} else {
 		err = errHTTPInvalidResponse

@@ -227,6 +227,27 @@ func TestHTTPResponsesNormalStreamDoesNotLogRejection(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsesSSEWithoutContentType(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header()["Content-Type"] = nil
+		fmt.Fprintf(w, "event: response.created\ndata: %s\n\nevent: response.completed\ndata: %s\n\n", httpCreatedEvent, httpCompletedEvent)
+	}))
+	defer upstream.Close()
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+			srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
+			srv.admission = newAdmissionGate(1)
+			response := postResponse(t, proxy.URL, fmt.Sprintf(`{"model":"m","stream":%t}`, stream), nil)
+			body := readHTTPBody(t, response)
+			assertHTTPClean(t, srv)
+			if response.StatusCode != 200 || !strings.Contains(body, "completed") || srv.stats.snapshot().MonthlyUsage.TotalTokens != 14 {
+				t.Fatalf("status=%d body=%s", response.StatusCode, body)
+			}
+		})
+	}
+}
+
 func TestHTTPResponsesRateLimitReleasesUnacceptedOwner(t *testing.T) {
 	var attempts atomic.Int64
 	upstream := newHTTPUpstream(t, func(r *http.Request, stream *testResponseStream, _ []byte) {
