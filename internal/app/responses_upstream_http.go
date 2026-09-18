@@ -69,7 +69,7 @@ func (s *server) forwardHTTPResponse(peer *httpResponsesDownstream, request *htt
 		cancel(errHTTPPolicyChanged)
 	default:
 	}
-	accounting := &responseAccounting{server: s, request: request, apiKey: apiKey, route: route, thread: route.key(), ctx: ctx, liveThreads: map[string]struct{}{}, account: account}
+	accounting := &responseAccounting{server: s, request: request, apiKey: apiKey, via: transportHTTP, route: route, thread: route.key(), ctx: ctx, liveThreads: map[string]struct{}{}, account: account}
 	defer func() {
 		for thread := range accounting.liveThreads {
 			s.stats.deactivateThread(thread)

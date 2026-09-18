@@ -28,6 +28,13 @@ const (
 
 const serviceTierFast = "priority"
 
+type transport string
+
+const (
+	transportHTTP      transport = "http"
+	transportWebSocket transport = "ws"
+)
+
 var eventEmailPattern = regexp.MustCompile(`[\p{L}\p{N}.!#$%&'*+/=?^_\x60{|}~-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*`)
 
 type Stats struct {
@@ -76,6 +83,7 @@ type threadStats struct {
 	models             []threadModel
 	effort             string
 	serviceTier        string
+	via                transport
 	metadata           turnMetadata
 	turns              int64
 	compactions        int64
@@ -183,14 +191,14 @@ func (s *Stats) failedOver(account, reason string) {
 	s.appendEvent(Event{At: now, Kind: eventFailover, Account: account, Detail: reason})
 }
 
-func (s *Stats) accepted(session, routeThread, statsThread, clientIP, apiKeySuffix, account, model, effort, serviceTier string, metadata turnMetadata, counted bool) bool {
+func (s *Stats) accepted(session, routeThread, statsThread, clientIP, apiKeySuffix, account, model, effort, serviceTier string, via transport, metadata turnMetadata, counted bool) bool {
 	now := time.Now()
 	persisted := s.persistRoute(storedRoute{At: now, Session: session, Thread: routeThread, Account: account})
-	s.recordAccepted(now, statsThread, clientIP, apiKeySuffix, account, model, effort, serviceTier, metadata, counted)
+	s.recordAccepted(now, statsThread, clientIP, apiKeySuffix, account, model, effort, serviceTier, via, metadata, counted)
 	return persisted
 }
 
-func (s *Stats) recordAccepted(at time.Time, statsThread, clientIP, apiKeySuffix, account, model, effort, serviceTier string, metadata turnMetadata, counted bool) {
+func (s *Stats) recordAccepted(at time.Time, statsThread, clientIP, apiKeySuffix, account, model, effort, serviceTier string, via transport, metadata turnMetadata, counted bool) {
 	if !counted {
 		return
 	}
@@ -199,6 +207,7 @@ func (s *Stats) recordAccepted(at time.Time, statsThread, clientIP, apiKeySuffix
 	s.applyRouted(at, statsThread, clientIP, account, model, effort, serviceTier, metadata)
 	if thread := s.threads[statsThread]; thread != nil {
 		thread.apiKeySuffix = apiKeySuffix
+		thread.via = via
 	}
 }
 
@@ -502,8 +511,9 @@ type ThreadSnapshot struct {
 	Account            string `json:"account"`
 	Model              string `json:"model"`
 	models             []threadModel
-	Effort             string `json:"reasoning_effort"`
-	ServiceTier        string `json:"service_tier"`
+	Effort             string    `json:"reasoning_effort"`
+	ServiceTier        string    `json:"service_tier"`
+	Via                transport `json:"via"`
 	Metadata           turnMetadata
 	Turns              int64 `json:"turns"`
 	Compactions        int64 `json:"compactions"`
@@ -581,6 +591,7 @@ func (s *Stats) snapshot() Snapshot {
 			models:             models,
 			Effort:             t.effort,
 			ServiceTier:        t.serviceTier,
+			Via:                t.via,
 			Metadata:           t.metadata,
 			Turns:              t.turns,
 			Compactions:        t.compactions,

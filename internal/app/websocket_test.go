@@ -1520,6 +1520,9 @@ func TestWebSocketTracksUsageHeadersAndMetadata(t *testing.T) {
 	if snapshot.MonthlyUsage.InputTokens != 10 || len(snapshot.Threads) != 1 || snapshot.Threads[0].Metadata.TurnID != "turn" || snapshot.Threads[0].Compactions != 1 || snapshot.Threads[0].APIKeySuffix != "ret" {
 		t.Fatalf("stats = %+v", snapshot)
 	}
+	if snapshot.Threads[0].Via != transportWebSocket {
+		t.Fatalf("thread transport = %q, want WS", snapshot.Threads[0].Via)
+	}
 	usage, err := server.stats.store.apiKeyUsage()
 	if err != nil {
 		t.Fatal(err)

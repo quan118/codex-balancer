@@ -51,7 +51,7 @@ func newResponsesWebSocketRelay(s *server, downstream responsesDownstream, reque
 		cancel = func() { stop(); cancelContext() }
 	}
 	return &responsesWebSocketRelay{
-		responseAccounting: &responseAccounting{server: s, request: request, apiKey: apiKey, route: route, thread: route.key(), ctx: ctx, liveThreads: map[string]struct{}{}, account: initial.responseAccount},
+		responseAccounting: &responseAccounting{server: s, request: request, apiKey: apiKey, via: transportWebSocket, route: route, thread: route.key(), ctx: ctx, liveThreads: map[string]struct{}{}, account: initial.responseAccount},
 		messageLimit:       maxWebSocketMessage,
 		fastMode:           mode,
 		policyChanged:      changed,

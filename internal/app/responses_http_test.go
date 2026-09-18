@@ -304,7 +304,7 @@ func TestHTTPResponsesSSEIsIncrementalAndTerminal(t *testing.T) {
 	})
 	srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
 	srv.admission = newAdmissionGate(1)
-	resp := postResponse(t, proxy.URL, `{"model":"pool-model","stream":true,"input":"hi"}`, nil)
+	resp := postResponse(t, proxy.URL, `{"model":"pool-model","stream":true,"input":"hi"}`, http.Header{"Thread-Id": {"thread"}})
 	if resp.Header.Get("Content-Type") != "text/event-stream" || resp.Header.Get("X-Accel-Buffering") != "no" {
 		t.Fatalf("headers=%v", resp.Header)
 	}
@@ -320,6 +320,14 @@ func TestHTTPResponsesSSEIsIncrementalAndTerminal(t *testing.T) {
 	if scanner.Err() != nil || !strings.Contains(strings.Join(events, "\n"), `"delta":"hello"`) {
 		close(finish)
 		t.Fatal("delta not delivered before completion")
+	}
+	snapshot := srv.stats.snapshot()
+	if len(snapshot.Threads) != 1 || snapshot.Threads[0].Via != transportHTTP || snapshot.WSOpen != 0 {
+		t.Errorf("HTTP thread accounting = %+v", snapshot)
+	}
+	payload, err := renderDashboard("threads-update", srv.currentDashboard(time.Now()))
+	if err != nil || !strings.Contains(string(payload), `<td>HTTP</td>`) {
+		t.Errorf("HTTP transport missing from dashboard: %s, error: %v", payload, err)
 	}
 	close(finish)
 	for scanner.Scan() {

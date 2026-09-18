@@ -64,6 +64,7 @@ func TestDashboardPageConnectsHTMXSSE(t *testing.T) {
 		`<section id="workspace-section" hidden>`,
 		`<h2>Active Threads&nbsp; <span id="routing-count">0</span></h2>`,
 		`no live threads`,
+		`colspan="10"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard missing %q", expected)
@@ -122,7 +123,7 @@ func TestWebAssetsAreServedFromBinary(t *testing.T) {
 func TestDashboardSSEStreamsEscapedHTML(t *testing.T) {
 	stats := newStatsWithPrices(testPriceSnapshot(t))
 	stats.activateThread("019fe5c2private")
-	stats.accepted("", "019fe5c2private", "019fe5c2private", "203.0.113.42", "ret", "unused", "gpt-5.6-sol", "high", serviceTierFast, turnMetadata{}, true)
+	stats.accepted("", "019fe5c2private", "019fe5c2private", "203.0.113.42", "ret", "unused", "gpt-5.6-sol", "high", serviceTierFast, transportWebSocket, turnMetadata{}, true)
 	stats.recordUsage("019fe5c2private", "unused", "gpt-5.6-sol", "high", "default", responseUsage{OutputTokens: 1_000_000})
 	stats.failedOver("unused", "<script>upstream unavailable</script>")
 	stats.note("admin account refresh", "unused", "Quota and banked credits refreshed for alice@example.com.")
@@ -177,6 +178,8 @@ func TestDashboardSSEStreamsEscapedHTML(t *testing.T) {
 		`<td class="status"><span class="status-mark status-checking">◌</span> checking</td>`,
 		`<span>1 checking</span>`,
 		`<th>WS</th>`,
+		`<th>Via</th>`,
+		`<td>WS</td>`,
 		`<span role="img" aria-label="Fast">⚡️</span>`,
 		`USD burnt this month`,
 		`$30.00`,

@@ -115,6 +115,7 @@ type dashboardThreadView struct {
 	Account       string
 	Model         string
 	ModelInfo     string
+	Via           string
 	Fast          bool
 	UncachedInput string
 	CacheRate     string
@@ -609,6 +610,7 @@ func newDashboardThreadView(thread ThreadSnapshot, account string, client dashbo
 		Account:       account,
 		Model:         model,
 		ModelInfo:     modelInfo,
+		Via:           strings.ToUpper(string(thread.Via)),
 		Fast:          isFastServiceTier(thread.ServiceTier),
 		UncachedInput: formatTokenCount(thread.Usage.nonCachedInput()),
 		CacheRate:     dashboardCacheRate(thread.Usage),

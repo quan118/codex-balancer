@@ -185,6 +185,7 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums }
 <th>Client</th>
 <th>Account</th>
 <th>Model (thinking mode)</th>
+<th>Via</th>
 <th>Fast</th>
 <th>Cache %</th>
 <th>Context used<br>Compactions</th>
@@ -196,12 +197,13 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums }
 <td class="dim"><span id="{{.DOMID}}-client-location" class="has-tooltip client-location" data-tooltip="{{.Client.Info}}" role="img" aria-label="{{.Client.Info}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Client.Icon}}</span>{{if .Client.Suffix}} {{.Client.Suffix}}{{end}}</td>
 <td>{{.Account}}</td>
 <td>{{if .ModelInfo}}<span id="{{.DOMID}}-model" class="has-tooltip" data-tooltip="{{.ModelInfo}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Model}}</span>{{else}}{{.Model}}{{end}}</td>
+<td>{{if .Via}}{{.Via}}{{else}}--{{end}}</td>
 <td>{{if .Fast}}<span role="img" aria-label="Fast">⚡️</span>{{end}}</td>
 <td>{{.CacheRate}}</td>
 <td>{{if .ContextInfo}}<span id="{{.DOMID}}-context" class="has-tooltip" data-tooltip="{{.ContextInfo}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.ContextUsed}}</span>{{else}}{{.ContextUsed}}{{end}}</td>
 <td>{{.Cost}}</td>
 <td class="dim">{{.Last}}</td>
-</tr>{{end}}{{else}}<tr><td class="empty" colspan="9">no live threads</td></tr>{{end}}</tbody>
+</tr>{{end}}{{else}}<tr><td class="empty" colspan="10">no live threads</td></tr>{{end}}</tbody>
 </table>
 {{end}}
 
