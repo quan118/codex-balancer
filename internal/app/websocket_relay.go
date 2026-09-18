@@ -229,6 +229,7 @@ func (r *responsesWebSocketRelay) writeUpstream(message websocketMessage) bool {
 	observed.event(r.ctx, "upstream_write_started", attribute.String("account", r.current.account.id()), attribute.Int("bytes", len(message.data)), attribute.String("replay_owner_after_write_attempt", "client"))
 	started := time.Now()
 	if err := r.current.conn.Write(ctx, message.kind, message.data); err != nil {
+		err = r.upstreamWriteFailure(err)
 		r.logUpstreamFailure(err, "write", len(message.data))
 		observed.event(r.ctx, "upstream_write_failed", attribute.String("error_type", telemetryErrorClass(err)), attribute.Bool("possibly_transmitted", true))
 		r.downstream.upstreamFailed(r.ctx, err)

@@ -49,6 +49,23 @@ func websocketDiagnosticEvent(kind string) string {
 	}
 }
 
+func (r *responsesWebSocketRelay) upstreamWriteFailure(writeErr error) error {
+	r.current.conn.CloseNow()
+	for {
+		select {
+		case message := <-r.messages:
+			if !message.downstream && message.err != nil {
+				if websocket.CloseStatus(message.err) >= 0 {
+					return message.err
+				}
+				return writeErr
+			}
+		case <-r.ctx.Done():
+			return writeErr
+		}
+	}
+}
+
 func (r *responsesWebSocketRelay) logUpstreamFailure(err error, phase string, size int) {
 	if r.server.log == nil {
 		return

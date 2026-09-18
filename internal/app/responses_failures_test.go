@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,6 +41,84 @@ func readWebSocketFailure(t *testing.T, conn *websocket.Conn, code string) webso
 		t.Fatalf("failure = %s, want %s with a message", data, code)
 	}
 	return event
+}
+
+func TestUpstreamCloseDuringWritePreservesDetails(t *testing.T) {
+	for _, mode := range []string{"websocket", "json", "sse"} {
+		t.Run(mode, func(t *testing.T) {
+			type connectionKey struct{}
+			finished := make(chan struct{})
+			upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer conn.CloseNow()
+				conn.SetReadLimit(1024)
+				_, reader, err := conn.Reader(r.Context())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if _, err := io.CopyN(io.Discard, reader, 1024); err != nil {
+					t.Error(err)
+					return
+				}
+				payload := append([]byte{3, 241}, []byte("request exceeds upstream limit token-a")...)
+				frame := append([]byte{0x88, byte(len(payload))}, payload...)
+				if _, err := r.Context().Value(connectionKey{}).(net.Conn).Write(frame); err != nil {
+					t.Error(err)
+				}
+				<-finished
+			}))
+			upstream.Config.ConnContext = func(ctx context.Context, conn net.Conn) context.Context {
+				if err := conn.(*net.TCPConn).SetReadBuffer(1024); err != nil {
+					t.Error(err)
+				}
+				return context.WithValue(ctx, connectionKey{}, conn)
+			}
+			upstream.Start()
+			defer upstream.Close()
+			defer close(finished)
+			srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
+			srv.admission = newAdmissionGate(1)
+			logs := captureTestLogs(srv)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			payload := fmt.Sprintf(`{"model":"m","stream":%t,"input":%q}`, mode == "sse", strings.Repeat("x", 1<<20))
+			if mode == "websocket" {
+				payload = `{"type":"response.create",` + payload[1:]
+				conn, _ := dialWebSocket(t, proxy.URL, nil)
+				defer conn.CloseNow()
+				if err := conn.Write(ctx, websocket.MessageText, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+				_, data, err := conn.Read(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var failure websocketFailureEvent
+				if err := json.Unmarshal(data, &failure); err != nil {
+					t.Fatal(err)
+				}
+				if failure.Status != 400 || failure.Error.Code != "request_too_large" || failure.UpstreamCloseStatus != 1009 || failure.Retryable || !strings.Contains(failure.Error.Message, "request exceeds upstream limit [redacted]") {
+					t.Fatalf("failure = %s", data)
+				}
+				readCloseStatus(t, conn, websocket.StatusMessageTooBig)
+			} else {
+				response := postResponseTimeout(t, proxy.URL, payload, nil, 20*time.Second)
+				body := readHTTPBody(t, response)
+				if response.StatusCode != 400 || !strings.Contains(body, "request_too_large") || !strings.Contains(body, "request exceeds upstream limit [redacted]") || strings.Contains(body, "token-a") {
+					t.Fatalf("status=%d body=%s", response.StatusCode, body)
+				}
+			}
+			assertHTTPClean(t, srv)
+			if text := logs.String(); !strings.Contains(text, `"phase":"write"`) || !strings.Contains(text, `"close_status":1009`) {
+				t.Fatalf("write failure lost close status: %s", text)
+			}
+		})
+	}
 }
 
 func TestUpstreamClosePreservesDetailsAcrossTransports(t *testing.T) {
