@@ -6,9 +6,6 @@ _I wrote this README by hand, no LLM :)_
 
 Balancing usage across several ChatGPT Codex accounts.
 
-- One Responses endpoint, with HTTP and WebSocket transports
-- 1 single SQLite database
-
 ## Install
 
 ```sh
