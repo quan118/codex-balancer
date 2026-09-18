@@ -147,6 +147,7 @@ func TestRoutingShowsFullThreadDetails(t *testing.T) {
 			Turns:              39,
 			Compactions:        2,
 			Usage:              usage,
+			LatestUsage:        usage,
 			apiCostNanoDollars: 24_500_000,
 			Latency:            5420 * time.Millisecond,
 			Last:               time.Now(),
@@ -155,8 +156,8 @@ func TestRoutingShowsFullThreadDetails(t *testing.T) {
 
 	view := dashboard.threads(220, 8)
 	for _, expected := range []string{
-		"Thread", "Client", "IP", "Account", "Model", "Fast", "Uncached", "Cache%", "Output", "Used/Cmp", "Latency", "Reqs", "Cost", "Active",
-		"2private", "🇺🇸 ret", "203.0.113.42", "account-a@example.com", "☀️ xhigh", "⚡", "500", "75", "300", "-- (2)", "5.42s", "39", "$0.025",
+		"Thread", "Client", "IP", "Account", "Model", "Fast", "Uncached", "Cache%", "Output", "Tokens/Cmp", "Latency", "Reqs", "Cost", "Active",
+		"2private", "🇺🇸 ret", "203.0.113.42", "account-a@example.com", "☀️ xhigh", "⚡", "500", "75", "300", "2.3K (2)", "5.42s", "39", "$0.025",
 	} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("routing missing %q:\n%s", expected, view)
@@ -172,7 +173,7 @@ func TestRoutingShowsFullThreadDetails(t *testing.T) {
 		t.Fatalf("routing column order is not Client, IP, Account:\n%s", view)
 	}
 	compact := dashboard.threads(120, 8)
-	for _, expected := range []string{"Client", "🇺🇸 ret", "IP", "203.0.113.42", "Used/Cmp", "5.42s", "Reqs", "39", "Cost", "$0.025", "Active"} {
+	for _, expected := range []string{"Client", "🇺🇸 ret", "IP", "203.0.113.42", "Tokens/Cmp", "5.42s", "Reqs", "39", "Cost", "$0.025", "Active"} {
 		if !strings.Contains(compact, expected) {
 			t.Fatalf("compact routing missing %q:\n%s", expected, compact)
 		}

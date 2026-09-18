@@ -846,10 +846,10 @@ func TestDashboardRoutingShowsTokenUsage(t *testing.T) {
 		t.Fatalf("routing rows = %d, want one", len(view.Threads))
 	}
 	thread := view.Threads[0]
-	if thread.Client.String() != "🇺🇸 ret" || thread.Model != "☀️ xhigh" || thread.UncachedInput != "500" || thread.CacheRate != "75" || thread.Output != "300" || thread.ContextUsed != "0% (1)" || thread.Latency != "2s" || thread.Requests != "1" || thread.Cost != "$0.012" {
+	if thread.Client.String() != "🇺🇸 ret" || thread.Model != "☀️ xhigh" || thread.UncachedInput != "500" || thread.CacheRate != "75" || thread.Output != "300" || thread.ContextUsed != "2.3K (1)" || thread.Latency != "2s" || thread.Requests != "1" || thread.Cost != "$0.012" {
 		t.Fatalf("routing row = %+v", thread)
 	}
-	if thread.Info != "Request: compaction\nCodex thread: 2private\nTurn: 0private\nAgent: compact" || !strings.Contains(thread.ContextInfo, "Context window: 258.4K") || !strings.Contains(thread.ContextInfo, "Auto compact at: 244.8K") || !strings.Contains(thread.ContextInfo, "Tokens used: 2.3K") || !strings.Contains(thread.ContextInfo, "Context used: 0%") || !strings.Contains(thread.ContextInfo, "Compactions: 1") || thread.LatencyInfo != "First byte: 500ms\nTotal: 2s" {
+	if thread.Info != "Request: compaction\nCodex thread: 2private\nTurn: 0private\nAgent: compact" || thread.ContextInfo != "Latest response tokens: 2.3K\nCompactions: 1" || thread.LatencyInfo != "First byte: 500ms\nTotal: 2s" {
 		t.Fatalf("routing details = %+v", thread)
 	}
 	payload, err := renderDashboard("dashboard", view)
@@ -857,12 +857,12 @@ func TestDashboardRoutingShowsTokenUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(payload)
-	for _, expected := range []string{`class="has-tooltip client-location" data-tooltip="United States"`, `aria-label="United States"`, `>🇺🇸</span> ret</td>`, "<th>Model (thinking mode)</th>", "<td>☀️ xhigh</td>", "<th>Cache %</th>", "<th>Context used<br>Compactions</th>", "<th>Cost</th>", "<td>$0.012</td>", "Codex thread: 2private", "Auto compact at: 244.8K", "Compactions: 1"} {
+	for _, expected := range []string{`class="has-tooltip client-location" data-tooltip="United States"`, `aria-label="United States"`, `>🇺🇸</span> ret</td>`, "<th>Model (thinking mode)</th>", "<td>☀️ xhigh</td>", "<th>Cache %</th>", "<th>Context tokens<br>Compactions</th>", "<th>Cost</th>", "<td>$0.012</td>", "Codex thread: 2private", "Latest response tokens: 2.3K", "Compactions: 1"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard missing %q", expected)
 		}
 	}
-	for _, absent := range []string{"<th>Country</th>", ">Route</th>", "<th>Cached</th>", "<th>Reasoning</th>", ">Compacts</th>", "<th>Uncached input</th>", "<th>Output</th>", "<th>Latency</th>", "<th>Requests</th>", "First byte: 500ms", ">1 turn<"} {
+	for _, absent := range []string{"Context window:", "Auto compact at:", "Context used:", "<th>Country</th>", ">Route</th>", "<th>Cached</th>", "<th>Reasoning</th>", ">Compacts</th>", "<th>Uncached input</th>", "<th>Output</th>", "<th>Latency</th>", "<th>Requests</th>", "First byte: 500ms", ">1 turn<"} {
 		if strings.Contains(body, absent) {
 			t.Fatalf("dashboard contains %q", absent)
 		}
@@ -961,19 +961,33 @@ func TestDashboardClientViewShowsTunnelForLoopback(t *testing.T) {
 	}
 }
 
-func TestDashboardContextShowsPercentAndCompactions(t *testing.T) {
-	limits := modelContextLimits{Window: 112_000, AutoCompact: 100_000}
-	if got := dashboardContextUsed(12_000, limits, 0); got != "0%" {
-		t.Fatalf("context = %q, want 0%%", got)
+func TestDashboardContextShowsTokensAndCompactions(t *testing.T) {
+	for _, test := range []struct {
+		used        int64
+		compactions int64
+		want        string
+	}{
+		{0, 0, "--"},
+		{0, 1, "-- (1)"},
+		{12_000, 0, "12K"},
+		{62_000, 7, "62K (7)"},
+		{124_000, 0, "124K"},
+		{500_000, 0, "500K"},
+		{1_250_000, 0, "1.3M"},
+	} {
+		thread := ThreadSnapshot{
+			Usage:       responseUsage{TotalTokens: 42_000_000},
+			LatestUsage: responseUsage{TotalTokens: test.used},
+			Compactions: test.compactions,
+		}
+		view := newDashboardThreadView(thread, "account", dashboardClientView{}, time.Now())
+		if view.ContextUsed != test.want {
+			t.Errorf("context for %d tokens and %d compactions = %q, want %q", test.used, test.compactions, view.ContextUsed, test.want)
+		}
 	}
-	if got := dashboardContextUsed(62_000, limits, 7); got != "50% (7)" {
-		t.Fatalf("context = %q, want 50%% (7)", got)
-	}
-	if got := dashboardContextUsed(120_000, limits, 0); got != "100%" {
-		t.Fatalf("context = %q, want 100%%", got)
-	}
-	if info := dashboardContextInfo(62_000, limits, 0); !strings.Contains(info, "Context used: 50%\nCompactions: 0") {
-		t.Fatalf("context info = %q", info)
+	want := "Latest response tokens: 124K\nCompactions: 0"
+	if info := dashboardContextInfo(124_000, 0); info != want {
+		t.Fatalf("context info = %q, want %q", info, want)
 	}
 }
 

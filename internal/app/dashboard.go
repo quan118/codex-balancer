@@ -20,7 +20,6 @@ const (
 	dashboardMaxStreams      = 32
 	dashboardEventName       = "dashboard"
 	dashboardSubscriberQueue = 2
-	dashboardContextBaseline = 12_000
 	waterCSSURL              = "https://cdn.jsdelivr.net/npm/water.css@2/out/water.css"
 )
 
@@ -455,7 +454,7 @@ func (s *server) currentDashboard(now time.Time) dashboardView {
 	threadViews := make([]dashboardThreadView, 0, len(snapshot.Threads))
 	for _, thread := range snapshot.Threads {
 		client := newDashboardClientView(thread, &s.countries)
-		threadViews = append(threadViews, newDashboardThreadView(thread, names[thread.Account], client, s.catalog.contextLimits(thread.Account, thread.Model), now))
+		threadViews = append(threadViews, newDashboardThreadView(thread, names[thread.Account], client, now))
 	}
 
 	events := make([]dashboardEventView, 0, len(snapshot.Events))
@@ -595,7 +594,7 @@ func newDashboardClientView(thread ThreadSnapshot, countries *countryResolver) d
 	return client
 }
 
-func newDashboardThreadView(thread ThreadSnapshot, account string, client dashboardClientView, limits modelContextLimits, now time.Time) dashboardThreadView {
+func newDashboardThreadView(thread ThreadSnapshot, account string, client dashboardClientView, now time.Time) dashboardThreadView {
 	used := thread.LatestUsage.contextTokens()
 	cost := "--"
 	if !thread.Usage.empty() {
@@ -615,8 +614,8 @@ func newDashboardThreadView(thread ThreadSnapshot, account string, client dashbo
 		UncachedInput: formatTokenCount(thread.Usage.nonCachedInput()),
 		CacheRate:     dashboardCacheRate(thread.Usage),
 		Output:        formatTokenCount(thread.Usage.OutputTokens),
-		ContextUsed:   dashboardContextUsed(used, limits, thread.Compactions),
-		ContextInfo:   dashboardContextInfo(used, limits, thread.Compactions),
+		ContextUsed:   dashboardContextUsed(used, thread.Compactions),
+		ContextInfo:   dashboardContextInfo(used, thread.Compactions),
 		Latency:       formatLatency(thread.Latency),
 		LatencyInfo:   dashboardLatencyInfo(thread.TTFB, thread.Latency),
 		Requests:      dashboardNumber(thread.Turns),
@@ -697,10 +696,10 @@ func dashboardCacheRate(usage responseUsage) string {
 	return formatDecimal(float64(usage.InputDetails.CachedTokens) * 100 / float64(usage.InputTokens))
 }
 
-func dashboardContextUsed(used int64, limits modelContextLimits, compactions int64) string {
+func dashboardContextUsed(used, compactions int64) string {
 	context := "--"
-	if limits.Window > 0 {
-		context = fmt.Sprintf("%.0f%%", dashboardContextUsedPercent(used, limits.Window))
+	if used > 0 {
+		context = formatTokenCount(used)
 	}
 	if compactions > 0 {
 		context += " (" + strconv.FormatInt(compactions, 10) + ")"
@@ -708,31 +707,13 @@ func dashboardContextUsed(used int64, limits modelContextLimits, compactions int
 	return context
 }
 
-func dashboardContextInfo(used int64, limits modelContextLimits, compactions int64) string {
-	lines := make([]string, 0, 5)
-	if limits.Window > 0 {
-		lines = append(lines, "Context window: "+formatTokenCount(limits.Window))
-	}
-	if limits.AutoCompact > 0 {
-		lines = append(lines, "Auto compact at: "+formatTokenCount(limits.AutoCompact))
-	}
+func dashboardContextInfo(used, compactions int64) string {
+	lines := make([]string, 0, 2)
 	if used > 0 {
-		lines = append(lines, "Tokens used: "+formatTokenCount(used))
-	}
-	if limits.Window > 0 {
-		lines = append(lines, "Context used: "+formatPercent(dashboardContextUsedPercent(used, limits.Window)))
+		lines = append(lines, "Latest response tokens: "+formatTokenCount(used))
 	}
 	lines = append(lines, "Compactions: "+strconv.FormatInt(compactions, 10))
 	return strings.Join(lines, "\n")
-}
-
-func dashboardContextUsedPercent(used, window int64) float64 {
-	if window <= dashboardContextBaseline {
-		return 0
-	}
-	available := window - dashboardContextBaseline
-	consumed := max(used-dashboardContextBaseline, 0)
-	return float64(min(consumed, available)) * 100 / float64(available)
 }
 
 func formatLatency(value time.Duration) string {

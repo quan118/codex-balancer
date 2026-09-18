@@ -303,19 +303,6 @@ func TestNewerClientVersionComparesNumericParts(t *testing.T) {
 	}
 }
 
-func TestModelCatalogDerivesContextLimits(t *testing.T) {
-	catalog := newModelCatalog()
-	entry := testModelEntry("gpt-common")
-	entry["context_window"] = json.Number("272000")
-	entry["effective_context_window_percent"] = json.Number("95")
-	catalog.replace([]string{"account"}, map[string][]modelEntry{"account": {entry}}, "0.147.0")
-
-	limits := catalog.contextLimits("account", "gpt-common-2026-08-09")
-	if limits.Window != 258_400 || limits.AutoCompact != 244_800 {
-		t.Fatalf("context limits = %+v", limits)
-	}
-}
-
 func TestModelsRefreshesEveryActiveAccountAndServesUnion(t *testing.T) {
 	a := testAccount("account-a", 0)
 	b := testAccount("account-b", 20)

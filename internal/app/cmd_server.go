@@ -211,7 +211,7 @@ func serverCmd(args []string) (resultErr error) {
 	log.Info("listening", "addr", listener.Addr().String(), "accounts", pool.count(), "upstream", *upstream, "log_file", *logPath)
 
 	if !*plain {
-		board := dashboard{pool: pool, catalog: srv.catalog, stats: stats, server: srv, countries: &srv.countries, addr: listener.Addr().String()}
+		board := dashboard{pool: pool, stats: stats, server: srv, countries: &srv.countries, addr: listener.Addr().String()}
 		if _, err := tea.NewProgram(board, tea.WithContext(signalCtx)).Run(); err != nil &&
 			!errors.Is(err, context.Canceled) {
 			return err
