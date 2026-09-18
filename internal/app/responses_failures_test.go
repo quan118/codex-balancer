@@ -44,7 +44,7 @@ func readWebSocketFailure(t *testing.T, conn *websocket.Conn, code string) webso
 }
 
 func TestUpstreamCloseDuringWritePreservesDetails(t *testing.T) {
-	for _, mode := range []string{"websocket", "json", "sse"} {
+	for _, mode := range []string{"websocket"} {
 		t.Run(mode, func(t *testing.T) {
 			type connectionKey struct{}
 			finished := make(chan struct{})
@@ -134,9 +134,9 @@ func TestUpstreamClosePreservesDetailsAcrossTransports(t *testing.T) {
 		{websocket.StatusInvalidFramePayloadData, "upstream_websocket_closed", 400, 400},
 		{websocket.StatusInternalError, "upstream_websocket_closed", 502, 502},
 	} {
-		for _, mode := range []string{"websocket", "json", "sse"} {
+		for _, mode := range []string{"websocket"} {
 			t.Run(fmt.Sprintf("%d/%s", test.close, mode), func(t *testing.T) {
-				upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, _ []byte) {
+				upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, _ []byte) {
 					if mode == "sse" {
 						sendHTTPEvents(t, conn, httpCreatedEvent)
 					}
@@ -176,7 +176,7 @@ func TestUpstreamClosePreservesDetailsAcrossTransports(t *testing.T) {
 func TestWebSocketRetryPreservesOriginalErrorFields(t *testing.T) {
 	for _, kind := range []string{"error", "response.failed"} {
 		t.Run(kind, func(t *testing.T) {
-			upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, _ []byte) {
+			upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, _ []byte) {
 				details := `{"code":"server_is_overloaded","type":"server_error","message":"capacity token-\u0061","param":"model","extra":9007199254740993}`
 				field := `"error":` + details
 				if kind == "response.failed" {

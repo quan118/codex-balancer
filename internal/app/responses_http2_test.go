@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 // Exercise real HTTP/2 expiry semantics without adding 30-second sleeps to the
@@ -27,7 +25,7 @@ func (w shortHTTPWriteDeadline) SetWriteDeadline(deadline time.Time) error {
 func TestHTTPResponsesHTTP2GenerationIdleIsNotWriteTimeout(t *testing.T) {
 	for _, phase := range []string{"first event", "between events", "json"} {
 		t.Run(phase, func(t *testing.T) {
-			upstream := newHTTPUpstream(t, func(r *http.Request, conn *websocket.Conn, _ []byte) {
+			upstream := newHTTPUpstream(t, func(r *http.Request, conn *testResponseStream, _ []byte) {
 				if phase != "first event" {
 					sendHTTPEvents(t, conn, httpCreatedEvent)
 				}

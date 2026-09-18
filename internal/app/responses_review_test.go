@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -87,14 +86,14 @@ func TestResponsesFailedModelPreflight(t *testing.T) {
 		{"non-upgrade", 200, "not a websocket", "upstream_rejected", false},
 		{"timeout", 504, "", "upstream_timeout", true},
 	} {
-		for _, mode := range []string{"json", "sse", "websocket"} {
+		for _, mode := range []string{"websocket"} {
 			t.Run(test.name+"/"+mode, func(t *testing.T) {
 				var srv *server
 				var inference atomic.Int64
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.Header.Get("Chatgpt-Account-Id") == "a" {
 						srv.catalog.replace([]string{"a", "b"}, map[string][]modelEntry{"a": {testModelEntry("other")}, "b": {testModelEntry("m")}}, "0.1.0")
-						conn, err := websocket.Accept(w, r, nil)
+						conn, err := acceptResponseTestStream(w, r, nil)
 						if err != nil {
 							t.Error(err)
 							return
@@ -154,26 +153,10 @@ func TestResponsesFailedModelPreflight(t *testing.T) {
 	}
 }
 
-func TestHTTPResponsesEscapedInstructionType(t *testing.T) {
-	plain := `{"model":"m","input":[{"role":"system","content":[{"type":"input_text","text":"Follow instructions"}]}]}`
-	escaped := strings.Replace(plain, "input_text", `input_\u0074ext`, 1)
-	one, _, err := translateHTTPResponse([]byte(plain))
-	if err != nil {
-		t.Fatal(err)
-	}
-	two, _, err := translateHTTPResponse([]byte(escaped))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(one, two) {
-		t.Fatalf("equivalent JSON changed normalization: %s != %s", one, two)
-	}
-}
-
 func TestHTTPResponsesDecodedCredentialRedaction(t *testing.T) {
 	for _, mode := range []string{"json", "sse output", "sse failed", "sse nested error"} {
 		t.Run(mode, func(t *testing.T) {
-			upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, _ []byte) {
+			upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, _ []byte) {
 				sendHTTPEvents(t, conn, httpCreatedEvent)
 				switch mode {
 				case "sse failed":

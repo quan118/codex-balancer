@@ -104,6 +104,26 @@ Merge this into `~/.pi/agent/models.json`, keeping any unrelated providers:
 }
 ```
 
+## HTTP Responses contract
+
+HTTP POST requests go to the configured upstream's `/responses` endpoint over
+HTTP. WebSocket GET requests use upstream WebSockets. The balancer does not
+switch transports or replay inference requests.
+
+The balancer selects a pool account and replaces the authentication headers.
+Request fields pass through, including `stream`, `stream_options`, instructions,
+and input history. The configured fast-mode policy can override `service_tier`.
+The upstream validates generation options and conversation references.
+
+HTTP supports SSE and JSON responses. SSE is forwarded incrementally; when a
+non-streaming client receives an upstream SSE response, the balancer collects
+its output into JSON. Account usage and session ownership are tracked for both
+transports. Request bodies and individual response events are capped at 256 MiB.
+
+To use HTTP from Codex, set `supports_websockets = false` in the provider
+configuration and resume the session. HTTP acceptance of a large conversation
+depends on the upstream service's limits.
+
 ## Observability
 
 HTTP Responses has verbose, request-correlated logs. Use `server -no-tui -json`

@@ -3,12 +3,10 @@ package app
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,10 +19,10 @@ const httpCreatedEvent = `{"type":"response.created","response":{"id":"resp-test
 const httpCompletedEvent = `{"type":"response.completed","response":{"id":"resp-test","object":"response","created_at":1,"model":"pool-model","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}}`
 const httpTextDelta = `{"type":"response.output_text.delta","item_id":"msg-test","output_index":0,"content_index":0,"delta":"hello"}`
 
-func newHTTPUpstream(t *testing.T, respond func(*http.Request, *websocket.Conn, []byte)) *httptest.Server {
+func newHTTPUpstream(t *testing.T, respond func(*http.Request, *testResponseStream, []byte)) *httptest.Server {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
+		conn, err := acceptResponseTestStream(w, r, nil)
 		if err != nil {
 			t.Error(err)
 			return
@@ -42,7 +40,9 @@ func newHTTPUpstream(t *testing.T, respond func(*http.Request, *websocket.Conn, 
 	return upstream
 }
 
-func sendHTTPEvents(t *testing.T, conn *websocket.Conn, events ...string) {
+func sendHTTPEvents(t *testing.T, conn interface {
+	Write(context.Context, websocket.MessageType, []byte) error
+}, events ...string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -127,29 +127,10 @@ func TestHTTPResponsesRequestGuards(t *testing.T) {
 		{"trailing", `{"model":"m"} {}`, "", "", 400},
 		{"model missing", `{}`, "", "", 400}, {"model blank", `{"model":" "}`, "", "", 400},
 		{"model type", `{"model":5}`, "", "", 400}, {"model null", `{"model":null}`, "", "", 400},
-		{"input type", `{"model":"m","input":4}`, "", "", 400},
-		{"input null", `{"model":"m","input":null}`, "", "", 400},
-		{"item type", `{"model":"m","input":["hi"]}`, "", "", 400},
 		{"stream type", `{"model":"m","stream":"true"}`, "", "", 400},
 		{"stream null", `{"model":"m","stream":null}`, "", "", 400},
-		{"instructions type", `{"model":"m","instructions":[]}`, "", "", 400},
 		{"duplicate", `{"model":"m","model":"n"}`, "", "", 400},
 		{"case collision", `{"model":"m","Model":"n"}`, "", "", 400},
-		{"store", `{"model":"m","store":true}`, "", "", 400},
-		{"store type", `{"model":"m","store":"false"}`, "", "", 400},
-		{"background", `{"model":"m","background":true}`, "", "", 400},
-		{"background type", `{"model":"m","background":null}`, "", "", 400},
-		{"previous", `{"model":"m","previous_response_id":"r"}`, "", "", 400},
-		{"conversation", `{"model":"m","conversation":{"id":"c"}}`, "", "", 400},
-		{"reference", `{"model":"m","input":[{"type":"item_reference","id":"i"}]}`, "", "", 400},
-		{"implicit reference", `{"model":"m","input":[{"id":"i"}]}`, "", "", 400},
-		{"type", `{"model":"m","type":"response.cancel"}`, "", "", 400},
-		{"generate", `{"model":"m","generate":false}`, "", "", 400},
-		{"unsupported stream controls", `{"model":"m","stream_options":{}}`, "", "", 400},
-		{"max type", `{"model":"m","max_output_tokens":"4"}`, "", "", 400},
-		{"max fractional", `{"model":"m","max_output_tokens":4.2}`, "", "", 400},
-		{"temperature range", `{"model":"m","temperature":-1}`, "", "", 400},
-		{"top p range", `{"model":"m","top_p":2}`, "", "", 400},
 		{"metadata type", `{"model":"m","client_metadata":{"x":{}}}`, "", "", 400},
 		{"gzip", `{"model":"m"}`, "gzip", "", 415},
 		{"media type", `{"model":"m"}`, "", "text/plain", 415},
@@ -172,7 +153,7 @@ func TestHTTPResponsesRequestGuards(t *testing.T) {
 
 func TestHTTPResponsesAuthenticationAndAdmission(t *testing.T) {
 	var connections atomic.Int64
-	upstream := newHTTPUpstream(t, func(r *http.Request, conn *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(r *http.Request, conn *testResponseStream, _ []byte) {
 		connections.Add(1)
 		if r.Header.Get("Chatgpt-Account-Id") != "pool" || r.Header.Get("Authorization") != "Bearer token-pool" {
 			t.Errorf("client identity affected upstream credentials: %v", r.Header)
@@ -249,7 +230,7 @@ func TestHTTPResponsesAuthenticationAndAdmission(t *testing.T) {
 
 func TestHTTPResponsesForwardsCodexHeaders(t *testing.T) {
 	seen := make(chan http.Header, 1)
-	upstream := newHTTPUpstream(t, func(r *http.Request, conn *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(r *http.Request, conn *testResponseStream, _ []byte) {
 		seen <- r.Header.Clone()
 		sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
 	})
@@ -266,7 +247,7 @@ func TestHTTPResponsesForwardsCodexHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", name, headers.Get(name), want)
 		}
 	}
-	for _, name := range []string{"X-Secret", "Cookie", "Accept"} {
+	for _, name := range []string{"X-Secret", "Cookie"} {
 		if headers.Get(name) != "" {
 			t.Errorf("%s reached upstream", name)
 		}
@@ -277,7 +258,7 @@ func TestHTTPResponsesForwardsCodexHeaders(t *testing.T) {
 func TestHTTPResponsesLosslessTranslation(t *testing.T) {
 	const body = `{"model":"exact-model","stream":false,"store":false,"background":false,"previous_response_id":null,"instructions":"explicit","input":[{"role":"system","content":"first"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"second"},{"type":"input_text","text":"third"}]},{"role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"data:image/png;base64,AA=="}]},{"role":"developer","content":"later"},{"type":"function_call","call_id":"call","name":"run","arguments":"{}"},{"type":"function_call_output","call_id":"call","output":"result"},{"type":"custom_tool_call","call_id":"custom","name":"patch","input":"patch text"},{"type":"custom_tool_call_output","call_id":"custom","output":"done"},{"type":"reasoning","id":"rs","encrypted_content":"opaque","summary":[]}],"tools":[{"type":"function","name":"run","parameters":{"type":"object"}},{"type":"custom","name":"patch","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}],"text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object"}},"verbosity":"low"},"reasoning":{"effort":"high","summary":"auto"},"include":["reasoning.encrypted_content"],"service_tier":"priority","prompt_cache_key":"cache","client_metadata":{"trace":"client"},"metadata":{"number":"9007199254740993"},"unknown":{"number":9007199254740993,"decimal":0.123456789012345678901},"temperature":0.3,"top_p":0.9,"max_output_tokens":32768}`
 	captured := make(chan []byte, 1)
-	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, data []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, data []byte) {
 		captured <- data
 		sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
 	})
@@ -287,84 +268,31 @@ func TestHTTPResponsesLosslessTranslation(t *testing.T) {
 	if got := readHTTPBody(t, resp); resp.StatusCode != 200 {
 		t.Fatalf("status=%d %s", resp.StatusCode, got)
 	}
-	before, _ := responseObject([]byte(body))
-	after, _ := responseObject(<-captured)
-	if got, _ := responseString(after["instructions"]); got != "explicit" {
-		t.Fatalf("instructions=%q", got)
-	}
-	var original, translated []json.RawMessage
-	json.Unmarshal(before["input"], &original)
-	json.Unmarshal(after["input"], &translated)
-	if !reflect.DeepEqual(original, translated) {
-		t.Fatalf("input changed: %s", after["input"])
-	}
-	for _, key := range []string{"model", "tools", "text", "reasoning", "include", "service_tier", "prompt_cache_key", "client_metadata", "metadata", "unknown"} {
-		if string(before[key]) != string(after[key]) {
-			t.Errorf("%s changed: %s", key, after[key])
-		}
-	}
-	for _, key := range []string{"stream", "background", "previous_response_id", "temperature", "top_p", "max_output_tokens"} {
-		if after[key] != nil {
-			t.Errorf("HTTP-only field %s forwarded", key)
-		}
-	}
-	if string(after["type"]) != `"response.create"` || string(after["store"]) != "false" {
-		t.Fatal("invalid upstream controls")
+	if got := string(<-captured); got != body {
+		t.Fatalf("request changed: %s", got)
 	}
 	assertHTTPClean(t, srv)
 }
 
-func TestHTTPResponsesLiftsInstructionsOnlyWithoutExplicitInstructions(t *testing.T) {
-	for _, test := range []struct {
-		name, body, instructions, input string
-	}{
-		{"lifted", `{"model":"m","input":[{"role":"system","content":"first"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"second"}]},{"role":"user","content":"hello"},{"role":"developer","content":"later"}]}`, "first\n\nsecond", `[{"role":"user","content":"hello"},{"role":"developer","content":"later"}]`},
-		{"explicit instructions keep developer items", `{"model":"m","instructions":"explicit","input":[{"role":"developer","content":"context","internal_chat_message_metadata_passthrough":{"content_item_kinds":["environment_context"]}},{"role":"user","content":"hello"}]}`, "explicit", `[{"role":"developer","content":"context","internal_chat_message_metadata_passthrough":{"content_item_kinds":["environment_context"]}},{"role":"user","content":"hello"}]`},
-		{"extra field stops lifting", `{"model":"m","input":[{"role":"system","content":"first"},{"role":"developer","content":"second","phase":"commentary"},{"role":"user","content":"hello"}]}`, "first", `[{"role":"developer","content":"second","phase":"commentary"},{"role":"user","content":"hello"}]`},
-		{"image content stops lifting", `{"model":"m","input":[{"role":"system","content":[{"type":"input_image","image_url":"data:..."}]},{"role":"user","content":"hello"}]}`, "", `[{"role":"system","content":[{"type":"input_image","image_url":"data:..."}]},{"role":"user","content":"hello"}]`},
-		{"annotated text stops lifting", `{"model":"m","input":[{"role":"system","content":[{"type":"input_text","text":"hi","prompt_cache_breakpoint":{}}]}]}`, "", `[{"role":"system","content":[{"type":"input_text","text":"hi","prompt_cache_breakpoint":{}}]}]`},
+func TestHTTPResponsesValidatesOnlyRoutingFields(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"m","input":"hello"}`,
+		`{"model":"m","input":[]}`,
+		`{"model":"m","instructions":"only"}`,
+		`{"model":"m","response":"opaque","status":"opaque","generate":"opaque"}`,
+		`{"model":"m","stream_options":{"reasoning_summary_delivery":"sequential_cutoff"}}`,
+		`{"model":"m","previous_response_id":"r","unknown":{"value":9007199254740993}}`,
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			data, _, err := translateHTTPResponse([]byte(test.body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			fields, _ := responseObject(data)
-			if got, _ := responseString(fields["instructions"]); got != test.instructions {
-				t.Fatalf("instructions=%q want %q", got, test.instructions)
-			}
-			var want, got []json.RawMessage
-			json.Unmarshal([]byte(test.input), &want)
-			json.Unmarshal(fields["input"], &got)
-			if !reflect.DeepEqual(want, got) {
-				t.Fatalf("input=%s want %s", fields["input"], test.input)
-			}
-		})
-	}
-}
-
-func TestHTTPResponsesStringAndEmptyInput(t *testing.T) {
-	for _, body := range []string{`{"model":"m","input":"hello"}`, `{"model":"m","input":[]}`, `{"model":"m","instructions":"only"}`, `{"model":"m"}`} {
-		data, stream, err := translateHTTPResponse([]byte(body))
-		if err != nil || stream {
-			t.Fatalf("translate: %s %v", data, err)
-		}
-		fields, _ := responseObject(data)
-		if _, ok := responseString(fields["instructions"]); !ok {
-			t.Fatal("no instructions string")
-		}
-		if fields["input"] == nil {
-			t.Fatal("no input array")
-		}
-		if strings.Contains(body, "hello") && string(fields["input"]) != `[{"content":[{"text":"hello","type":"input_text"}],"role":"user"}]` {
-			t.Fatalf("string input=%s", fields["input"])
+		event, stream, err := validateHTTPResponse([]byte(body))
+		if err != nil || stream || event.Model != "m" {
+			t.Fatalf("validation: %s %v", body, err)
 		}
 	}
 }
 
 func TestHTTPResponsesSSEIsIncrementalAndTerminal(t *testing.T) {
 	finish := make(chan struct{})
-	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, _ []byte) {
 		sendHTTPEvents(t, conn, httpCreatedEvent, httpTextDelta)
 		<-finish
 		sendHTTPEvents(t, conn,
@@ -436,7 +364,7 @@ func TestHTTPResponsesJSONOutput(t *testing.T) {
 		{"invalid index", []string{`{"type":"response.output_item.done","output_index":-1,"item":{}}`}, "invalid_upstream_output", 502},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+			upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 				sendHTTPEvents(t, c, append([]string{httpCreatedEvent}, test.events...)...)
 			})
 			srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
@@ -471,7 +399,7 @@ func TestHTTPResponsesInBandErrors(t *testing.T) {
 		for _, committed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/committed_%t", test.code, committed), func(t *testing.T) {
 				var requests atomic.Int64
-				upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+				upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 					requests.Add(1)
 					if committed {
 						sendHTTPEvents(t, c, httpCreatedEvent, httpTextDelta)
@@ -526,7 +454,7 @@ func TestHTTPResponsesTransportFailures(t *testing.T) {
 	for _, scenario := range []string{"malformed", "binary", "eof", "terminal missing response", "conflicting status"} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream_%t", scenario, stream), func(t *testing.T) {
-				upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+				upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 					if stream {
 						sendHTTPEvents(t, c, httpCreatedEvent, httpTextDelta)
 					}

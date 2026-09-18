@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -94,7 +93,7 @@ func observationPayload(t *testing.T, logs *testLogBuffer, spans tracetest.SpanS
 func TestResponsesObservabilityRetainsOwnersAndShowsCacheUsage(t *testing.T) {
 	var requests atomic.Int64
 	accounts := make(chan string, 3)
-	upstream := newHTTPUpstream(t, func(r *http.Request, conn *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(r *http.Request, conn *testResponseStream, _ []byte) {
 		if r.Header.Get("Traceparent") != "" || r.Header.Get("Tracestate") != "" || r.Header.Get("Baggage") != "" {
 			t.Error("client tracing headers reached inference upstream")
 		}
@@ -160,7 +159,7 @@ func TestResponsesObservabilityRetainsOwnersAndShowsCacheUsage(t *testing.T) {
 				t.Fatalf("cleanup/replay=%v", record)
 			}
 		}
-		for _, stage := range []string{"started", "admission", "body_read", "normalized", "route_selected", "handshake_finished", "upstream_write_started", "upstream_write_finished", "response_accepted", "usage", "terminal", "cleanup", "finished"} {
+		for _, stage := range []string{"started", "admission", "body_read", "normalized", "route_selected", "http_response_headers", "upstream_write_started", "upstream_write_finished", "response_accepted", "usage", "terminal", "cleanup", "finished"} {
 			if _, ok := stages[stage]; !ok {
 				t.Errorf("request %s missing %s", id, stage)
 			}
@@ -206,7 +205,7 @@ func TestResponsesObservabilityErrorsAndGuards(t *testing.T) {
 					io.WriteString(w, `{"error":{"code":"rate_limit_exceeded","message":"ERROR_BODY_PRIVATE token-a"}}`)
 					return
 				}
-				conn, err := websocket.Accept(w, r, nil)
+				conn, err := acceptResponseTestStream(w, r, nil)
 				if err != nil {
 					t.Error(err)
 					return
@@ -267,7 +266,7 @@ func TestResponsesObservabilityExplainsUsageReplayBoundary(t *testing.T) {
 	for _, accepted := range []bool{false, true} {
 		t.Run(fmt.Sprint(accepted), func(t *testing.T) {
 			var requests atomic.Int64
-			upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, _ []byte) {
+			upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, _ []byte) {
 				requests.Add(1)
 				if accepted {
 					sendHTTPEvents(t, conn, httpCreatedEvent)
@@ -285,16 +284,16 @@ func TestResponsesObservabilityExplainsUsageReplayBoundary(t *testing.T) {
 			}
 			found := false
 			for _, record := range observationRecords(t, logs) {
-				if record["stage"] != "reconnect_decision" {
+				if record["stage"] != "upstream_rejected" {
 					continue
 				}
 				found = true
-				if record["accepted_before_rejection"] != accepted || record["usage_reconnect_signal"] != !accepted || record["retry_owner"] != "client" || record["inference_replayed"] != false {
+				if record["accepted_before_rejection"] != accepted || record["retry_owner"] != "client" || record["inference_replayed"] != false {
 					t.Fatalf("incorrect replay boundary diagnostics: %v", record)
 				}
 			}
 			if !found {
-				t.Fatal("missing reconnect decision")
+				t.Fatal("missing upstream rejection")
 			}
 		})
 	}

@@ -4,11 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/coder/websocket"
 )
 
-func TestHTTPResponsesModelPreflightKeepsVettedHeaders(t *testing.T) {
+func TestHTTPResponsesCatalogChangeDoesNotRedispatch(t *testing.T) {
 	var srv *server
 	requests := make(chan string, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -17,13 +15,11 @@ func TestHTTPResponsesModelPreflightKeepsVettedHeaders(t *testing.T) {
 			t.Error("unvetted headers reached a model preflight connection")
 		}
 		if account == "a" {
-			// The catalog can refresh while a handshake is in flight. Force the
-			// existing relay's safe first-turn model preflight onto account B.
 			srv.catalog.replace([]string{"a", "b"}, map[string][]modelEntry{
 				"a": {testModelEntry("different")}, "b": {testModelEntry("m")},
 			}, "0.1.0")
 		}
-		conn, err := websocket.Accept(w, r, nil)
+		conn, err := acceptResponseTestStream(w, r, nil)
 		if err != nil {
 			t.Error(err)
 			return
@@ -48,7 +44,7 @@ func TestHTTPResponsesModelPreflightKeepsVettedHeaders(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
 	assertHTTPClean(t, srv)
-	if got := <-requests; got != "b" {
+	if got := <-requests; got != "a" {
 		t.Fatalf("inference account=%s", got)
 	}
 	select {

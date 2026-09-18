@@ -26,7 +26,7 @@ func waitHTTPSignal(t *testing.T, signal <-chan struct{}) {
 func TestHTTPResponsesOverlappingSessionOwnership(t *testing.T) {
 	started := make(chan string, 2)
 	accept := make(chan struct{})
-	upstream := newHTTPUpstream(t, func(r *http.Request, c *websocket.Conn, data []byte) {
+	upstream := newHTTPUpstream(t, func(r *http.Request, c *testResponseStream, data []byte) {
 		started <- r.Header.Get("Chatgpt-Account-Id")
 		<-accept
 		sendHTTPEvents(t, c, httpCreatedEvent)
@@ -78,7 +78,7 @@ func TestHTTPResponsesAffinityAliasesAndAnonymous(t *testing.T) {
 	for _, header := range []string{"Session_id", "Session-Id", "X-Codex-Session-Id", "X-Codex-Conversation-Id", "X-Session-Affinity", "X-Session-Id", ""} {
 		t.Run(header, func(t *testing.T) {
 			accounts := make(chan string, 2)
-			upstream := newHTTPUpstream(t, func(r *http.Request, c *websocket.Conn, _ []byte) {
+			upstream := newHTTPUpstream(t, func(r *http.Request, c *testResponseStream, _ []byte) {
 				accounts <- r.Header.Get("Chatgpt-Account-Id")
 				sendHTTPEvents(t, c, httpCreatedEvent, httpCompletedEvent)
 			})
@@ -107,7 +107,7 @@ func TestHTTPResponsesAffinityAliasesAndAnonymous(t *testing.T) {
 
 func TestHTTPResponsesModelTierRetentionAndTurnState(t *testing.T) {
 	accounts := make(chan string, 10)
-	upstream := newHTTPUpstream(t, func(r *http.Request, c *websocket.Conn, data []byte) {
+	upstream := newHTTPUpstream(t, func(r *http.Request, c *testResponseStream, data []byte) {
 		accounts <- r.Header.Get("Chatgpt-Account-Id")
 		sendHTTPEvents(t, c, httpCreatedEvent, httpCompletedEvent)
 	})
@@ -170,7 +170,7 @@ func TestHTTPResponsesInvalidationAndPolicyChanges(t *testing.T) {
 						close(started)
 						<-release
 					}
-					c, err := websocket.Accept(w, r, nil)
+					c, err := acceptResponseTestStream(w, r, nil)
 					if err != nil {
 						return
 					}
@@ -223,8 +223,8 @@ func TestHTTPResponsesInvalidationAndPolicyChanges(t *testing.T) {
 				}
 				waitHTTPSignal(t, closed)
 				assertHTTPClean(t, srv)
-				if phase == "handshake" && requests.Load() != 0 {
-					t.Fatal("inference sent after setup invalidation")
+				if phase == "handshake" && requests.Load() != 1 {
+					t.Fatal("HTTP request was redispatched after invalidation")
 				}
 				owners, err := srv.pool.store.routeOwners("", "session")
 				if err != nil || fmt.Sprint(owners) != "[owner]" {
@@ -243,11 +243,12 @@ func TestHTTPResponsesCancellationAndShutdown(t *testing.T) {
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					defer close(closed)
 					if phase == "handshake" {
+						io.Copy(io.Discard, r.Body)
 						close(started)
 						<-r.Context().Done()
 						return
 					}
-					c, err := websocket.Accept(w, r, nil)
+					c, err := acceptResponseTestStream(w, r, nil)
 					if err != nil {
 						return
 					}
@@ -328,7 +329,7 @@ func TestHTTPResponsesCancellationAndShutdown(t *testing.T) {
 	}
 }
 
-func TestHTTPResponsesHandshakeErrorsAndRefresh(t *testing.T) {
+func TestHTTPResponsesRejectionsAndRefresh(t *testing.T) {
 	for _, scenario := range []string{"server failure", "model missing", "rate limited", "refresh", "in-band refresh"} {
 		t.Run(scenario, func(t *testing.T) {
 			refreshCalls := useOAuthRefreshServer(t)
@@ -357,7 +358,7 @@ func TestHTTPResponsesHandshakeErrorsAndRefresh(t *testing.T) {
 						return
 					}
 				}
-				c, err := websocket.Accept(w, r, nil)
+				c, err := acceptResponseTestStream(w, r, nil)
 				if err != nil {
 					t.Error(err)
 					return
@@ -379,13 +380,13 @@ func TestHTTPResponsesHandshakeErrorsAndRefresh(t *testing.T) {
 			srv.admission = newAdmissionGate(1)
 			resp := postResponse(t, proxy.URL, `{"model":"m"}`, nil)
 			body := readHTTPBody(t, resp)
-			want := map[string]int{"server failure": 502, "model missing": 404, "rate limited": 429, "refresh": 200, "in-band refresh": 503}[scenario]
+			want := map[string]int{"server failure": 502, "model missing": 404, "rate limited": 429, "refresh": 503, "in-band refresh": 503}[scenario]
 			if resp.StatusCode != want || strings.Contains(body, "token-a") || resp.Header.Get("Authorization") != "" || resp.Header.Get("Chatgpt-Account-Id") != "" || resp.Header.Get("Upgrade") != "" {
 				t.Fatalf("status=%d headers=%v body=%s", resp.StatusCode, resp.Header, body)
 			}
 			assertHTTPClean(t, srv)
 			if scenario == "refresh" || scenario == "in-band refresh" {
-				if refreshCalls() != 1 || requests.Load() != 1 {
+				if refreshCalls() != 1 || connections.Load() != 1 || requests.Load() != map[string]int64{"refresh": 0, "in-band refresh": 1}[scenario] {
 					t.Fatalf("refreshes=%d requests=%d", refreshCalls(), requests.Load())
 				}
 			} else if connections.Load() != 1 || requests.Load() != 0 {
@@ -396,7 +397,7 @@ func TestHTTPResponsesHandshakeErrorsAndRefresh(t *testing.T) {
 }
 
 func TestHTTPResponsesIdleTimeout(t *testing.T) {
-	upstream := newHTTPUpstream(t, func(_ *http.Request, _ *websocket.Conn, _ []byte) {})
+	upstream := newHTTPUpstream(t, func(_ *http.Request, _ *testResponseStream, _ []byte) {})
 	srv := newTestServer(t, []*Account{testAccount("a", 0)})
 	srv.upstream = upstream.URL
 	req := httptest.NewRequest("POST", "/v1/responses", nil)

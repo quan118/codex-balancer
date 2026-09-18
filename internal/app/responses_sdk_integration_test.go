@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 // CODEX_BALANCER_TEST_SDK points to an isolated install of @ai-sdk/openai
@@ -36,19 +34,15 @@ func TestHTTPResponsesPinnedSDK(t *testing.T) {
 		}
 	}
 	var requests atomic.Int64
-	upstream := newHTTPUpstream(t, func(r *http.Request, c *websocket.Conn, data []byte) {
+	upstream := newHTTPUpstream(t, func(r *http.Request, c *testResponseStream, data []byte) {
 		requests.Add(1)
 		fields, err := responseObject(data)
 		if err != nil {
 			t.Error(err)
 			return
 		}
-		if string(fields["model"]) != `"gpt-6-astra"` || string(fields["store"]) != "false" || fields["stream"] != nil || fields["temperature"] != nil || fields["max_output_tokens"] != nil {
-			t.Errorf("invalid translated SDK request: %s", data)
-		}
-		instructions, _ := responseString(fields["instructions"])
-		if instructions == "" && !strings.Contains(string(fields["input"]), "ERROR_") {
-			t.Error("SDK instructions were lost")
+		if string(fields["model"]) != `"gpt-6-astra"` || fields["type"] != nil {
+			t.Errorf("invalid forwarded SDK request: %s", data)
 		}
 		if r.Header.Get("Authorization") != "Bearer token-pool" {
 			t.Error("wrong upstream auth")

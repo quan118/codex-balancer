@@ -52,7 +52,7 @@ func TestResponsesPOSTAliasesShareHTTPAdapter(t *testing.T) {
 			for _, stream := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/stream_%t", path, encoding, stream), func(t *testing.T) {
 					captured := make(chan []byte, 1)
-					upstream := newHTTPUpstream(t, func(r *http.Request, c *websocket.Conn, data []byte) {
+					upstream := newHTTPUpstream(t, func(r *http.Request, c *testResponseStream, data []byte) {
 						if r.Header.Get("Content-Encoding") != "" {
 							t.Error("request compression header reached upstream WebSocket")
 						}
@@ -79,7 +79,7 @@ func TestResponsesPOSTAliasesShareHTTPAdapter(t *testing.T) {
 						t.Fatal(resp.Header)
 					}
 					data := <-captured
-					if !bytes.Contains(data, []byte(`"type":"response.create"`)) || !bytes.Contains(data, []byte("9007199254740993")) {
+					if bytes.Contains(data, []byte(`"type":"response.create"`)) || !bytes.Contains(data, []byte("9007199254740993")) {
 						t.Fatalf("lost translation/precision: %s", data)
 					}
 					assertHTTPClean(t, srv)
@@ -148,7 +148,7 @@ func TestZstdRequestsRejectInvalidAndOversizedBodiesBeforeDial(t *testing.T) {
 }
 
 func TestZstdRequestBoundaryAndConcatenatedFrames(t *testing.T) {
-	upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 		sendHTTPEvents(t, c, httpCreatedEvent, httpCompletedEvent)
 	})
 	srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
@@ -260,7 +260,7 @@ func TestResponsesMethodRejectionsAreLogged(t *testing.T) {
 }
 
 func TestUpstreamWebSocketFailureLogsMetadataWithoutReason(t *testing.T) {
-	upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 		sendHTTPEvents(t, c, httpCreatedEvent)
 		c.Close(websocket.StatusPolicyViolation, "SECRET_UPSTREAM_REASON")
 	})

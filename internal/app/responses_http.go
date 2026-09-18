@@ -89,7 +89,7 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 	}
 	controller.SetReadDeadline(time.Time{})
 	_, translationSpan := s.responseTracer().Start(ctx, "codex.request.translate")
-	data, stream, err := translateHTTPResponse(data)
+	event, stream, err := validateHTTPResponse(data)
 	spanFailure(translationSpan, err)
 	translationSpan.End()
 	if err != nil {
@@ -98,8 +98,6 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	mode, changed := s.fastMode.snapshot()
-	var event websocketEnvelope
-	json.Unmarshal(data, &event)
 	requestedTier := event.ServiceTier
 	data, event.ServiceTier, err = mode.override(data, event.ServiceTier)
 	if err != nil {
@@ -113,30 +111,8 @@ func (s *server) responsesHTTP(w http.ResponseWriter, request *http.Request) {
 		items: map[int]json.RawMessage{}, pending: map[int]bool{},
 		responsesRedactor: s.responsesRedactor(),
 	}
-	route := websocketRouteFrom(request.Header)
-	upstreamRequest := request.Clone(ctx)
-	upstreamRequest.Header = httpResponseRequestHeaders(request.Header)
-	// Retain the existing stats IP calculation without forwarding its headers.
-	upstreamRequest.RemoteAddr = requestIP(request)
-	dial, failed, err := s.dialResponsesWebSocket(upstreamRequest, route, event.Model, event.ServiceTier)
-	if err != nil || failed != nil {
-		defer closeWebSocketResponse(failed)
-		peer.setupFailed(ctx, failed, err)
-		return
-	}
-	state := dial.account.persisted()
-	peer.secrets = append(peer.secrets, state.AccessToken, state.RefreshToken, state.IDToken)
-	dial.conn.SetReadLimit(maxHTTPOutput)
-	// The request context is linked to server shutdown above. The same relay
-	// handles claims, invalidation, acceptance and usage for both transports.
-	relay := newResponsesWebSocketRelay(s, peer, upstreamRequest, dial, route, apiKey, mode, changed)
-	relay.idleTimeout = httpIdleWait
-	relay.messageLimit = maxHTTPOutput
-	relay.messages = make(chan websocketMessage, 1)
-	relay.run()
-	if !peer.finished {
-		peer.fail(httpResponseFailure{Status: 502, Code: "upstream_disconnected", Message: "upstream ended without a terminal response; retry with full history"})
-	}
+	s.forwardHTTPResponse(peer, request, data, event, apiKey, changed)
+
 }
 
 func writeHTTPResponseError(w http.ResponseWriter, status int, message string) {
@@ -160,6 +136,11 @@ func httpResponseRequestHeaders(inbound http.Header) http.Header {
 		lower := strings.ToLower(name)
 		if strings.HasPrefix(lower, "x-codex-") || strings.HasPrefix(lower, "x-openai-") {
 			out[name] = values
+		}
+	}
+	for _, value := range inbound.Values("Connection") {
+		for name := range strings.SplitSeq(value, ",") {
+			out.Del(strings.TrimSpace(name))
 		}
 	}
 	return out

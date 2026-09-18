@@ -62,15 +62,11 @@ these spans:
 POST /v1/responses
   http.request.read
   codex.request.translate
-  codex.route
-    codex.websocket.handshake
-    codex.credentials.wait          # if refresh is needed
-    codex.pool_recovery             # if capacity recovery is needed
-  codex.model_preflight             # only if compatibility changed during setup
-    codex.route
-      codex.websocket.handshake
-  codex.response                   # one generation, not one span per token
+  codex.response
 ```
+
+`codex.credentials.wait` and `codex.pool_recovery` appear only when selection
+needs a credential refresh or quota recovery.
 
 `codex.credentials.refresh` is an independent operation span, linked to its
 waiters. Its `codex.credentials.complete` child includes persistence/publication
@@ -88,13 +84,14 @@ Useful request stages:
 | `method_not_allowed`, `rejected` | Unsupported methods on the three Responses paths, including requests rejected before admission/inference. |
 | `normalized` | Model, requested/effective tier, fast-mode policy, input/tool counts, reasoning/tool replay counts and private prefix fingerprints. |
 | `route_selected`, `routing_candidate` | Selected/prior/blocked owner, routing reason, provisional claim/join and candidate quota/priority state. Selection is not response acceptance. |
-| `handshake_started`, `handshake_finished`, `upstream_ready` | Setup latency and status; still no `response.created`. |
-| `turn_preflight`, `account_switch_ready` | Model/tier portability checks and a pre-transmission account change. |
+| `handshake_started`, `handshake_finished`, `upstream_ready` | WebSocket setup latency and status before response acceptance. |
+| `turn_preflight`, `account_switch_ready`, `reconnect_decision`, `relay_close` | WebSocket account selection and reconnect decisions. |
+| `http_response_headers` | Upstream HTTP status after the POST. This does not prove that a response completed. |
 | `upstream_write_started`, `upstream_write_finished` | The transmission boundary. A failed write may still have partially transmitted the request. |
 | `response_accepted` | Ownership acceptance at `response.created`, whether SQLite persisted it, and the deduplicated `accepted_switch` flag. |
 | `first_upstream_event`, `first_delta` | First-event/delta latency; the delta type distinguishes text, reasoning and tool progress. |
 | `upstream_event`, `downstream_event` | DEBUG event type, size/index/sequence metadata; never the delta or tool arguments. |
-| `reconnect_decision`, `failure`, `relay_close` | Quota/transport/policy failure and why the client must reconnect/replay. |
+| `upstream_rejected`, `failure` | Upstream rejection or transport failure. The client owns retries; the balancer does not resend the POST. |
 | `usage` | Actual input, cached, cache-write, output and reasoning tokens, plus `cached_input_percent` when input usage exists. |
 | `terminal`, `cleanup`, `finished` | Terminal kind, cleanup, admission release, counts, elapsed time and cancellation state. |
 
@@ -122,10 +119,11 @@ WebSocket upgrade (or rejected during auth/handshake) use
 `msg="responses request rejected"`, with method, path, status and a safe reason.
 This does not add an access logger for unrelated application routes.
 
-`msg="upstream websocket failure"` now covers legacy GET clients as well as HTTP
-executions. It records read/write phase, error class (EOF, timeout, reset, close,
-etc.), close status, connection age, time since the last event, a known event
-category, pending/accepted turn counts and frame/read-limit byte counts. Session
+`msg="upstream websocket failure"` covers WebSocket GET clients. HTTP POST
+executions use `http_response_headers`, `upstream_rejected`, `upstream_failed`,
+and `failure`. WebSocket failure logs record the read or write phase, error class,
+close status, connection age, time since the last event, event category,
+pending and accepted turn counts, and frame sizes. Session
 and thread hashes correlate the failure with later HTTP fallback in the same
 process. Raw error text and upstream close reasons are never logged. A close
 code or elapsed time is evidence to investigate, not proof of quota exhaustion;
@@ -141,13 +139,13 @@ Read the trace as a sequence:
 
 1. `route_selected` with `routing_reason="retained"` should keep a healthy owner,
    even when another account has more quota or manual priority.
-2. A first-turn compatibility switch must precede `upstream_write_started` and
-   respect `portable_frame` plus the turn-state-header checks.
+2. Account selection and account-bound state checks precede
+   `upstream_write_started`. Catalog changes after dispatch cannot resend a POST.
 3. Once `write_attempted=true`, do not infer replay safety merely from
    `response_created=false` or `sse_committed=false`. The server never replays a
    transmitted generation; retry ownership remains with the client.
-4. A usage rejection records whether `response.created` already happened, the
-   presence of account-bound turn state, and the existing reconnect decision.
+4. An HTTP usage rejection records whether `response.created` already happened
+   and identifies the client as the retry owner.
    The client supplies full history without an old response ID or turn-state
    token when moving accounts, analogous to resuming after a manual account
    change. Encrypted reasoning remains in that history, not in logs.
@@ -168,7 +166,7 @@ request A: usage input_tokens=100 cached_tokens=75 cached_input_percent=75
 request B: usage rejection accepted_before_rejection=true retry_owner=client
 request B: failure -> cleanup                         # no internal replay
 request C: route_selected prior_owner=pool-a account=pool-b reason=owner_spent
-request C: turn_preflight portable_frame=true -> upstream_write_started
+request C: upstream_write_started
 request C: response_accepted accepted_switch=true     # new owner/cache boundary
 ```
 

@@ -276,13 +276,13 @@ func TestWebSocketRouteAcceptanceRejectsAnInvalidatedClaim(t *testing.T) {
 	selection := server.routeClaims.selectAccount(route, durableRouteOwners{}, func([]string) routingDecision {
 		return routingDecision{account: account}
 	})
-	dial := &websocketDial{account: account, claim: selection.claim}
+	dial := &websocketDial{responseAccount: &responseAccount{account: account, claim: selection.claim}}
 
 	account.mu.Lock()
 	account.Paused = true
 	account.mu.Unlock()
 	server.invalidateAccount(account.id(), routingReasonOwnerPaused)
-	accepted := server.acceptWebSocketRoute(dial, storedRoute{
+	accepted := server.acceptResponseRoute(dial.responseAccount, storedRoute{
 		At:      time.Now(),
 		Session: route.session,
 		Thread:  route.thread,
@@ -467,11 +467,11 @@ func TestWebSocketAcceptedMoveLogsTheDurableSwitchReason(t *testing.T) {
 	second.CloseNow()
 	third.CloseNow()
 	output := logs.String()
-	if got := strings.Count(output, `"msg":"websocket account switch accepted"`); got != 1 {
+	if got := strings.Count(output, `"msg":"response account switch accepted"`); got != 1 {
 		t.Fatalf("accepted switch log count = %d, want 1 for joined sockets:\n%s", got, output)
 	}
 	for _, want := range []string{
-		`"msg":"websocket account switch accepted"`,
+		`"msg":"response account switch accepted"`,
 		`"from_account":"account-old"`,
 		`"to_account":"account-new"`,
 		`"routing_reason":"owner_spent"`,

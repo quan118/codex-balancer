@@ -24,83 +24,9 @@ var (
 )
 
 type websocketDial struct {
-	conn          *websocket.Conn
-	resp          *http.Response
-	account       *Account
-	accessToken   authorizationRevision
-	claim         *routeClaimHandle
-	priorOwner    string
-	routingReason routingReason
-	moved         bool
-}
-
-type routeAcceptance struct {
-	allowed   bool
-	persisted bool
-	logSwitch bool
-}
-
-func (d *websocketDial) releaseClaim() {
-	if d != nil && d.claim != nil {
-		d.claim.release()
-		d.claim = nil
-	}
-}
-
-func (d *websocketDial) commitClaim(keys []string) {
-	if d != nil && d.claim != nil {
-		d.claim.commit(keys)
-		d.claim = nil
-	}
-}
-
-func (d *websocketDial) acceptSwitch() bool {
-	if d == nil || !d.moved {
-		return false
-	}
-	return d.claim.acceptSwitch()
-}
-
-func (s *server) acceptWebSocketRoute(dial *websocketDial, route storedRoute) routeAcceptance {
-	result := routeAcceptance{}
-	if dial == nil || dial.account == nil {
-		return result
-	}
-	s.routeOwnership.Lock()
-	defer s.routeOwnership.Unlock()
-	if !s.accountRoutable(dial.account.id()) || !dial.claim.active() {
-		return result
-	}
-	result.allowed = true
-	dial.account.accepted(route.At)
-	result.persisted = s.stats.persistRoute(route)
-	result.logSwitch = dial.acceptSwitch()
-	if result.persisted {
-		keys := routeClaimKeys(websocketRoute{session: route.Session, thread: route.Thread})
-		if dial.claim != nil {
-			dial.commitClaim(keys)
-		} else {
-			s.routeClaims.clearBarriers(keys)
-		}
-	}
-	return result
-}
-
-func (s *server) preserveWebSocketRetryOwner(dial *websocketDial) {
-	if dial == nil || dial.claim == nil {
-		return
-	}
-	s.routeOwnership.Lock()
-	defer s.routeOwnership.Unlock()
-	at := time.Now()
-	keys := dial.claim.preserve()
-	dial.claim = nil
-	if len(keys) == 0 || s.pool == nil || s.pool.store == nil {
-		return
-	}
-	if err := s.pool.store.preserveRouteOwners(at, dial.account.id(), keys); err != nil {
-		s.log.Warn("websocket retry owner preservation failed", "account", dial.account.id(), "routes", keys, "error", err)
-	}
+	*responseAccount
+	conn *websocket.Conn
+	resp *http.Response
 }
 
 func (s *server) transferWebSocketClaim(current *routeClaimHandle, account, priorOwner string, reason routingReason) *routeClaimHandle {

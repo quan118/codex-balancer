@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,20 +13,10 @@ import (
 )
 
 type responsesWebSocketDialer struct {
-	server        *server
-	request       *http.Request
-	model         string
-	serviceTier   string
+	*responseAccountRouter
 	upstream      string
-	route         websocketRoute
-	thread        string
-	durable       durableRouteOwners
-	owners        []string
-	replacing     *routeClaimHandle
-	skip          map[string]bool
-	reauthed      map[string]bool
-	resetRetried  map[string]bool
 	lastRejection *websocketSetupError
+	replacing     *routeClaimHandle
 }
 
 // Keep a structured setup rejection available to HTTP without changing the
@@ -63,41 +52,11 @@ func newResponsesWebSocketDialer(s *server, request *http.Request, route websock
 	if err != nil {
 		return nil, err
 	}
-	durable := durableRouteOwners{}
-	if s.pool.store != nil {
-		if route.thread != "" {
-			owners, ownerErr := s.pool.store.routeOwners(route.thread, "")
-			if ownerErr != nil {
-				return nil, ownerErr
-			}
-			if len(owners) > 0 {
-				durable.thread = owners[0]
-			}
-		}
-		if route.session != "" {
-			owners, ownerErr := s.pool.store.routeOwners("", route.session)
-			if ownerErr != nil {
-				return nil, ownerErr
-			}
-			if len(owners) > 0 {
-				durable.session = owners[0]
-			}
-		}
+	router, err := newResponseAccountRouter(s, request, route, model, serviceTier)
+	if err != nil {
+		return nil, err
 	}
-	return &responsesWebSocketDialer{
-		server:       s,
-		request:      request,
-		model:        model,
-		serviceTier:  serviceTier,
-		upstream:     upstream,
-		route:        route,
-		thread:       route.key(),
-		durable:      durable,
-		owners:       durable.ordered(),
-		skip:         map[string]bool{},
-		reauthed:     map[string]bool{},
-		resetRetried: map[string]bool{},
-	}, nil
+	return &responsesWebSocketDialer{responseAccountRouter: router, upstream: upstream}, nil
 }
 
 func (d *responsesWebSocketDialer) dial() (dial *websocketDial, failed *http.Response, err error) {
@@ -178,44 +137,6 @@ func (d *responsesWebSocketDialer) dial() (dial *websocketDial, failed *http.Res
 	}
 }
 
-func (d *responsesWebSocketDialer) recoverPool(candidates []routingCandidate) bool {
-	observed := observation(d.request.Context())
-	ctx, span := observed.start(d.request.Context(), "codex.pool_recovery")
-	defer span.End()
-	observed.event(ctx, "pool_recovery_started", attribute.Bool("write_attempted", false))
-	excluded := maps.Clone(d.resetRetried)
-	allowed := d.server.allowedAccounts(d.model, d.serviceTier)
-	for _, candidate := range candidates {
-		if !accountAllowed(allowed, candidate.id) || d.skip[candidate.id] && !candidate.spent {
-			excluded[candidate.id] = true
-		}
-	}
-	recovered := d.server.recoverPoolUsageLimit(ctx, excluded)
-	observed.event(ctx, "pool_recovery_finished", attribute.Bool("recovered", recovered != nil), attribute.String("error_type", telemetryErrorClass(ctx.Err())))
-	if recovered == nil || excluded[recovered.id()] {
-		return false
-	}
-	delete(d.skip, recovered.id())
-	d.resetRetried[recovered.id()] = true
-	return true
-}
-
-func (d *responsesWebSocketDialer) refreshBeforeDial(account *Account, retained bool) (bool, error) {
-	id := account.id()
-	if !account.refreshDue(time.Now()) || d.reauthed[id] {
-		return false, nil
-	}
-	d.reauthed[id] = true
-	if d.server.refreshedContext(d.request.Context(), account, id) {
-		return false, nil
-	}
-	if retained {
-		return false, errRouteOwnerUnavailable
-	}
-	d.skip[id] = true
-	return true, nil
-}
-
 func (d *responsesWebSocketDialer) open(account *Account) upstreamWebSocketDial {
 	result := upstreamWebSocketDial{sent: time.Now()}
 	ctx, cancel := context.WithTimeout(d.request.Context(), upstreamWait)
@@ -279,14 +200,16 @@ func (d *responsesWebSocketDialer) routed(result upstreamWebSocketDial, selectio
 	attrs = append(attrs, routingLogAttrs(account.routingCandidate(), time.Now())...)
 	d.server.log.Debug("websocket routed", attrs...)
 	return &websocketDial{
-		conn:          result.conn,
-		resp:          result.response,
-		account:       account,
-		accessToken:   result.accessToken,
-		claim:         selection.claim,
-		priorOwner:    decision.priorOwner,
-		routingReason: decision.reason,
-		moved:         decision.moved(),
+		conn: result.conn,
+		resp: result.response,
+		responseAccount: &responseAccount{
+			account:       account,
+			accessToken:   result.accessToken,
+			claim:         selection.claim,
+			priorOwner:    decision.priorOwner,
+			routingReason: decision.reason,
+			moved:         decision.moved(),
+		},
 	}
 }
 

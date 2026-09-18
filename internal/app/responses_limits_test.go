@@ -14,7 +14,7 @@ import (
 )
 
 func TestHTTPResponsesOutputLimit(t *testing.T) {
-	upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		item := strings.Repeat("x", maxHTTPOutput/2+1)
@@ -37,7 +37,7 @@ func TestHTTPResponsesOutputLimit(t *testing.T) {
 }
 
 func TestHTTPResponsesDuplicateTerminalDoesNotDoubleCount(t *testing.T) {
-	upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 		sendHTTPEvents(t, c, httpCreatedEvent, httpCreatedEvent, httpCompletedEvent)
 		// The adapter may already have closed the socket. Either way the second
 		// terminal must never reach accounting or the downstream.
@@ -58,7 +58,7 @@ func TestHTTPResponsesDuplicateTerminalDoesNotDoubleCount(t *testing.T) {
 
 func TestHTTPResponsesGracefulDrain(t *testing.T) {
 	started, finish := make(chan struct{}), make(chan struct{})
-	upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, c *testResponseStream, _ []byte) {
 		close(started)
 		<-finish
 		sendHTTPEvents(t, c, httpCreatedEvent, httpCompletedEvent)
@@ -135,7 +135,11 @@ func TestHTTPResponsesRefreshCancellation(t *testing.T) {
 
 func TestHTTPResponsesHandshakeTimeout(t *testing.T) {
 	closed := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done(); close(closed) }))
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+		close(closed)
+	}))
 	defer upstream.Close()
 	srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
 	srv.admission = newAdmissionGate(1)

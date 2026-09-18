@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -78,7 +77,7 @@ func TestTelemetryOTLPExportAndShutdown(t *testing.T) {
 	if otel.GetTracerProvider() != global {
 		t.Fatal("changed global tracer provider")
 	}
-	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, _ []byte) {
 		sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
 	})
 	srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
@@ -179,7 +178,7 @@ func TestTelemetrySlowCollectorDoesNotBlockInference(t *testing.T) {
 		_, span := tracer.Start(context.Background(), "queue-pressure")
 		span.End()
 	}
-	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *websocket.Conn, _ []byte) {
+	upstream := newHTTPUpstream(t, func(_ *http.Request, conn *testResponseStream, _ []byte) {
 		sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
 	})
 	srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})

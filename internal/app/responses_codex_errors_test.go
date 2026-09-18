@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,7 +64,41 @@ func testCodexAppServerUpstreamFailure(t *testing.T, websockets bool, scenario s
 		sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
 	})
 	defer upstream.Close()
-	_, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
+	upstreamURL := upstream.URL
+	if !websockets {
+		httpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.Header.Get("Upgrade") != "" {
+				t.Errorf("HTTP client reached upstream as %s", r.Method)
+			}
+			io.Copy(io.Discard, r.Body)
+			attempt := attempts.Add(1)
+			switch scenario {
+			case "message too big":
+				w.WriteHeader(413)
+				io.WriteString(w, `{"error":{"code":"request_too_large","message":"request exceeds upstream limit"}}`)
+				return
+			case "policy":
+				w.WriteHeader(400)
+				io.WriteString(w, `{"error":{"code":"invalid_request","message":"upstream policy detail"}}`)
+				return
+			case "authentication":
+				if attempt == 1 {
+					w.WriteHeader(401)
+					io.WriteString(w, `{"error":{"code":"unauthorized","message":"original authentication detail"}}`)
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			if scenario == "capacity" {
+				io.WriteString(w, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"original capacity detail\"}}}\n\n")
+				return
+			}
+			fmt.Fprintf(w, "data: %s\n\ndata: %s\n\n", httpCreatedEvent, httpCompletedEvent)
+		}))
+		defer httpUpstream.Close()
+		upstreamURL = httpUpstream.URL
+	}
+	_, proxy := newWebSocketProxy(t, upstreamURL, []*Account{testAccount("a", 0)})
 	turn, events := runCodexErrorTurn(t, proxy.URL, websockets)
 	if scenario == "message too big" || scenario == "policy" || scenario == "capacity" && !websockets {
 		want := "request_too_large"

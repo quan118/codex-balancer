@@ -57,6 +57,9 @@ func responseFailure(fields responseFields, fallback int) httpResponseFailure {
 	if param, exists := details["param"]; exists {
 		failure.Param = param
 	}
+	if failure.Code == "upstream_error" && failure.Type == "usage_limit_reached" {
+		failure.Code = failure.Type
+	}
 	switch {
 	case websocketRejection(envelope) == websocketRejectionUnauthorized || failure.Status == 401:
 		failure.Status = 503
@@ -123,7 +126,11 @@ func (d *httpResponsesDownstream) fail(failure httpResponseFailure) (err error) 
 				d.writer.Header().Set("Retry-After", "1")
 			}
 		}
-		data, _ := json.Marshal(map[string]responseFields{"error": failure.errorObject()})
+		envelope := map[string]any{"error": failure.errorObject()}
+		if failure.UpstreamStatus != 0 && failure.UpstreamStatus != failure.Status {
+			envelope["upstream_status"] = failure.UpstreamStatus
+		}
+		data, _ := json.Marshal(envelope)
 		data = d.redact(data)
 		d.writeDeadline()
 		d.writer.WriteHeader(failure.Status)
