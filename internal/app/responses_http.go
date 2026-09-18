@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	maxHTTPResponseBody = 8 << 20
-	maxHTTPOutput       = 16 << 20
+	maxHTTPResponseBody = 256 << 20
+	maxHTTPOutput       = 256 << 20
 	httpResponseIOWait  = 30 * time.Second
 	httpIdleWait        = 6 * time.Minute
 )

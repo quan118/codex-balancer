@@ -127,8 +127,7 @@ func TestZstdRequestsRejectInvalidAndOversizedBodiesBeforeDial(t *testing.T) {
 		{"trailing decoded JSON", append(bytes.Clone(valid), valid...), []string{"zstd"}, 400},
 		{"decoded limit", tooMuch, []string{"zstd"}, 413},
 		{"encoded limit", make([]byte, maxHTTPResponseBody+1), []string{"zstd"}, 413},
-		// Zstd frame header: non-single-segment, 16 MiB window, empty last block.
-		{"window limit", []byte{0x28, 0xb5, 0x2f, 0xfd, 0, 0x70, 1, 0, 0}, []string{"zstd"}, 413},
+		{"window limit", []byte{0x28, 0xb5, 0x2f, 0xfd, 0, 0x98, 1, 0, 0}, []string{"zstd"}, 413},
 		{"stacked encodings", valid, []string{"zstd, identity"}, 415},
 		{"duplicate header", valid, []string{"zstd", "zstd"}, 415},
 		{"gzip", valid, []string{"gzip"}, 415},

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -166,7 +167,7 @@ func (d *httpResponsesDownstream) collect(kind string, fields responseFields) er
 		item := fields["item"]
 		d.itemBytes += len(item) - len(d.items[index])
 		if d.itemBytes+d.createdBytes > maxHTTPOutput {
-			return errors.New("retained output exceeds 16 MiB")
+			return fmt.Errorf("retained output exceeds %d MiB", maxHTTPOutput>>20)
 		}
 		d.items[index] = item
 		delete(d.pending, index)
@@ -217,7 +218,7 @@ func (d *httpResponsesDownstream) result(fields responseFields) ([]byte, error) 
 	}
 	data, err := json.Marshal(response)
 	if len(data) > maxHTTPOutput {
-		return nil, errors.New("response exceeds 16 MiB")
+		return nil, fmt.Errorf("response exceeds %d MiB", maxHTTPOutput>>20)
 	}
 	return data, err
 }

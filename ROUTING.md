@@ -34,7 +34,7 @@ requested model. A `401` refreshes the account once; a usage limit marks it
 spent and a transient `429` cools it, and the next eligible account is tried.
 When every account rejects the call, the client receives the last upstream
 rejection with its status, `Retry-After` and redacted body. Request bodies are
-capped at 16 MiB and responses stream through unchanged.
+capped at 256 MiB and responses stream through unchanged up to 256 MiB.
 
 ## Fresh placement
 
@@ -467,10 +467,13 @@ against upstream; JSON error bodies and typed WebSocket errors carry that same
 object, including `plan_type` and `resets_at`. Unknown valid events are forwarded as events;
 normal terminal handling closes promptly even if upstream leaves the socket open.
 
-Identity and zstd requests have separate 8 MiB wire/decoded limits. The zstd
-window is capped at 8 MiB, checksums are verified, and trailing malformed data is
+Identity and zstd requests have separate 256 MiB wire/decoded limits. The zstd
+window is capped at 256 MiB, checksums are verified, and trailing malformed data is
 not ignored. Decoding is single-worker/synchronous with context checks between
 reader calls; no asynchronous decoder worker can outlive the request.
+
+WebSocket messages, retained HTTP output, final JSON responses, and upstream
+error bodies each have a 256 MiB limit.
 
 Limits are 30 seconds to read the body, 90 seconds per upstream handshake/write,
 six minutes per idle event wait (Codex's own stream idle timeout is five

@@ -157,7 +157,7 @@ func TestHTTPResponsesRequestGuards(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			resp := postResponse(t, proxy.URL, test.body, http.Header{"Content-Encoding": {test.encoding}, "Content-Type": {test.contentType}})
+			resp := postResponseTimeout(t, proxy.URL, test.body, http.Header{"Content-Encoding": {test.encoding}, "Content-Type": {test.contentType}}, 90*time.Second)
 			body := readHTTPBody(t, resp)
 			if resp.StatusCode != test.status || !strings.Contains(body, `"error"`) {
 				t.Fatalf("status=%d body=%s", resp.StatusCode, body)

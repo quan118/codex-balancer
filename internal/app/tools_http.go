@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const maxToolRequestBody = 16 << 20
+const maxToolRequestBody = 256 << 20
 
 var toolEndpoints = []string{"/v1/alpha/search", "/v1/images/generations", "/v1/images/edits"}
 

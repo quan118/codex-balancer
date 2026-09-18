@@ -15,16 +15,19 @@ import (
 
 func TestHTTPResponsesOutputLimit(t *testing.T) {
 	upstream := newHTTPUpstream(t, func(_ *http.Request, c *websocket.Conn, _ []byte) {
-		item := strings.Repeat("x", 9<<20)
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		item := strings.Repeat("x", maxHTTPOutput/2+1)
 		for index := 0; index < 2; index++ {
 			event := fmt.Sprintf(`{"type":"response.output_item.done","output_index":%d,"item":{"type":"custom_tool_call","call_id":"c","name":"large","input":%q}}`, index, item)
-			sendHTTPEvents(t, c, event)
+			if err := c.Write(ctx, websocket.MessageText, []byte(event)); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	})
 	srv, proxy := newWebSocketProxy(t, upstream.URL, []*Account{testAccount("a", 0)})
 	srv.admission = newAdmissionGate(1)
-	// Race instrumentation scans two large JSON frames several times; retain
-	// the real 16 MiB production limit rather than shrinking the test fixture.
 	resp := postResponseTimeout(t, proxy.URL, `{"model":"m"}`, nil, 90*time.Second)
 	body := readHTTPBody(t, resp)
 	if resp.StatusCode != 502 || !strings.Contains(body, "retained output exceeds") {

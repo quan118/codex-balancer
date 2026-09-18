@@ -19,7 +19,7 @@ import (
 
 const (
 	maxWebSocketMessage  = 256 << 20
-	maxUpstreamErrorBody = 64 << 10
+	maxUpstreamErrorBody = 256 << 20
 	refreshTimeout       = 30 * time.Second
 	upstreamWait         = 90 * time.Second
 	websocketUpgradeWait = 10 * time.Second
