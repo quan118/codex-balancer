@@ -102,7 +102,7 @@ func TestUpstreamCloseDuringWritePreservesDetails(t *testing.T) {
 				if err := json.Unmarshal(data, &failure); err != nil {
 					t.Fatal(err)
 				}
-				if failure.Status != 400 || failure.Error.Code != "request_too_large" || failure.UpstreamCloseStatus != 1009 || failure.Retryable || !strings.Contains(failure.Error.Message, "request exceeds upstream limit [redacted]") {
+				if failure.Status != 502 || failure.Error.Code != "request_too_large" || failure.UpstreamCloseStatus != 1009 || !failure.Retryable || !strings.Contains(failure.Error.Message, "request exceeds upstream limit [redacted]") {
 					t.Fatalf("failure = %s", data)
 				}
 				readCloseStatus(t, conn, websocket.StatusMessageTooBig)
@@ -128,7 +128,7 @@ func TestUpstreamClosePreservesDetailsAcrossTransports(t *testing.T) {
 		http  int
 		ws    int
 	}{
-		{websocket.StatusMessageTooBig, "request_too_large", 400, 400},
+		{websocket.StatusMessageTooBig, "request_too_large", 502, 502},
 		{websocket.StatusPolicyViolation, "upstream_websocket_closed", 400, 400},
 		{websocket.StatusProtocolError, "upstream_websocket_closed", 400, 400},
 		{websocket.StatusInvalidFramePayloadData, "upstream_websocket_closed", 400, 400},

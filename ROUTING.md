@@ -360,12 +360,12 @@ balancer does not add a second reconnect path.
   retained owner cannot continue and no provisional claim conflicts.
 - The balancer does not replay in-flight work.
 - Upstream WebSocket closes produce a typed error with the original close code
-  and reason; the message adds nothing beyond them. Code `1009` becomes
-  `request_too_large`. Codex remote compaction sends the same history, so
-  `/compact` can exceed the same upstream byte limit even when the token context
-  window has room, and retrying unchanged input cannot recover this failure.
-  Protocol, payload, and policy rejections are permanent request errors.
-  Transport failures remain retryable.
+  and reason. Code `1009` becomes retryable `request_too_large` with `status: 502`.
+  Codex can exhaust its WebSocket stream retries and then send full history over
+  HTTP. The balancer does not switch transports or replay the request. Codex
+  remote compaction can exceed the same upstream byte limit even when the token
+  context window has room. Protocol, payload, and policy rejections are permanent
+  request errors. Transport failures remain retryable.
 - WebSocket recovery errors use `type: error`, `status: 502`, and
   `retryable: true`. The nested `error` retains the upstream code, type, message,
   parameter, and extra fields. `upstream_type` and, when supplied,
@@ -373,8 +373,9 @@ balancer does not add a second reconnect path.
   report the cause while retaining its existing reconnect and replay behavior.
 - Permanent request failures use `status: 400` on every transport because
   Codex treats other HTTP error statuses, including `413`, as retryable and
-  would resend the same oversized or account-bound request. The error code and
-  `upstream_close_status` preserve the size or protocol failure. Setup errors
+  would resend the same HTTP payload or account-bound request. An upstream HTTP
+  `413` remains a permanent `request_too_large` error. The error code and
+  `upstream_close_status` preserve the original failure. Setup errors
   retain the upstream HTTP status in `upstream_status` and preserve `Retry-After`.
 - Newly surfaced error messages redact known account credentials. Raw upstream
   close reasons remain excluded from logs.

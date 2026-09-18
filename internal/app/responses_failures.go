@@ -24,9 +24,8 @@ func upstreamFailure(err error) (httpResponseFailure, websocket.StatusCode) {
 		failure.Message = fmt.Sprintf("upstream WebSocket closed with code %d", closed.Code)
 		switch closed.Code {
 		case websocket.StatusMessageTooBig:
-			failure.Status, failure.Code = 400, "request_too_large"
-			failure.Type = "invalid_request_error"
-			failure.Message += "; reduce conversation history or image payloads"
+			failure.Code = "request_too_large"
+			failure.Message += "; retry over HTTP transport"
 		case websocket.StatusProtocolError, websocket.StatusUnsupportedData, websocket.StatusInvalidFramePayloadData, websocket.StatusPolicyViolation, websocket.StatusMandatoryExtension:
 			failure.Status, failure.Type = 400, "invalid_request_error"
 		}
@@ -82,6 +81,9 @@ func (d websocketDownstream) writeFailure(ctx context.Context, failure httpRespo
 	}
 	if failure.CloseStatus != 0 {
 		fields["upstream_close_status"] = failure.CloseStatus
+	}
+	if failure.CloseStatus == int(websocket.StatusMessageTooBig) {
+		fields["retryable"] = true
 	}
 	data, err := json.Marshal(fields)
 	if err != nil {

@@ -21,11 +21,76 @@ import (
 
 func TestCodexAppServerSurfacesUpstreamFailures(t *testing.T) {
 	for _, transport := range []string{"websocket", "http"} {
-		for _, scenario := range []string{"message too big", "policy", "capacity", "authentication"} {
+		scenarios := []string{"policy", "capacity", "authentication"}
+		if transport == "http" {
+			scenarios = append(scenarios, "message too big")
+		}
+		for _, scenario := range scenarios {
 			t.Run(transport+"/"+scenario, func(t *testing.T) {
 				testCodexAppServerUpstreamFailure(t, transport == "websocket", scenario)
 			})
 		}
+	}
+}
+
+func TestCodexAppServerWebSocketSizeFailureFallsBackToHTTP(t *testing.T) {
+	if os.Getenv("CODEX_BALANCER_TEST_CODEX") == "" {
+		t.Skip("set CODEX_BALANCER_TEST_CODEX to run the app-server integration test")
+	}
+	for _, httpStatus := range []int{http.StatusOK, http.StatusRequestEntityTooLarge} {
+		t.Run(fmt.Sprint(httpStatus), func(t *testing.T) {
+			var websocketAttempts, httpAttempts atomic.Int64
+			upstream := newWebSocketUpstream(t, func(_ string, conn *websocket.Conn, request websocketEnvelope) {
+				if request.Generate != nil && !*request.Generate {
+					sendHTTPEvents(t, conn, httpCreatedEvent, httpCompletedEvent)
+					return
+				}
+				websocketAttempts.Add(1)
+				conn.Close(websocket.StatusMessageTooBig, "request exceeds upstream limit")
+			})
+			defer upstream.Close()
+			httpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					upstream.Config.Handler.ServeHTTP(w, r)
+					return
+				}
+				httpAttempts.Add(1)
+				if r.Method != http.MethodPost || r.Header.Get("Upgrade") != "" || r.Header.Get("Authorization") != "Bearer token-a" {
+					t.Errorf("unexpected upstream HTTP method, upgrade, or authentication")
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				var request map[string]json.RawMessage
+				if err := json.Unmarshal(body, &request); err != nil {
+					t.Error(err)
+				}
+				if !strings.Contains(string(request["input"]), "test upstream errors") || request["type"] != nil || request["previous_response_id"] != nil {
+					t.Errorf("HTTP fallback did not send a full-history Responses request")
+				}
+				if httpStatus == http.StatusRequestEntityTooLarge {
+					w.WriteHeader(httpStatus)
+					io.WriteString(w, `{"error":{"code":"request_too_large","message":"request exceeds upstream HTTP limit"}}`)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: %s\n\ndata: %s\n\n", httpCreatedEvent, httpCompletedEvent)
+			}))
+			defer httpUpstream.Close()
+			_, proxy := newWebSocketProxy(t, httpUpstream.URL, []*Account{testAccount("a", 0)})
+			turn, events := runCodexErrorTurn(t, proxy.URL, true)
+			wantStatus := "completed"
+			if httpStatus == http.StatusRequestEntityTooLarge {
+				wantStatus = "failed"
+			}
+			if turn["status"] != wantStatus || websocketAttempts.Load() != 3 || httpAttempts.Load() != 1 || !strings.Contains(events, "Falling back from WebSockets to HTTPS transport") {
+				t.Fatalf("websocket attempts=%d HTTP attempts=%d turn=%v events=%s", websocketAttempts.Load(), httpAttempts.Load(), turn, events)
+			}
+			if httpStatus == http.StatusRequestEntityTooLarge && !strings.Contains(events, "request_too_large") {
+				t.Fatalf("HTTP size rejection lost its code: %s", events)
+			}
+		})
 	}
 }
 
@@ -44,9 +109,6 @@ func testCodexAppServerUpstreamFailure(t *testing.T, websockets bool, scenario s
 		}
 		attempt := attempts.Add(1)
 		switch scenario {
-		case "message too big":
-			conn.Close(websocket.StatusMessageTooBig, "request exceeds upstream limit")
-			return
 		case "policy":
 			conn.Close(websocket.StatusPolicyViolation, "upstream policy detail")
 			return
@@ -141,7 +203,7 @@ experimental_bearer_token = "test-key"
 supports_websockets = %t
 requires_openai_auth = false
 request_max_retries = 2
-stream_max_retries = 4
+stream_max_retries = 2
 `, url+"/v1", websockets)
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)

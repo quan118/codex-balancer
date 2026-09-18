@@ -83,6 +83,7 @@ base_url = "http://127.0.0.1:8317/v1"
 env_key = "CODEX_BALANCER_API_KEY"
 requires_openai_auth = true
 supports_websockets = true
+stream_max_retries = 2
 ```
 
 ## Point pi at it
@@ -120,9 +121,11 @@ non-streaming client receives an upstream SSE response, the balancer collects
 its output into JSON. Account usage and session ownership are tracked for both
 transports. Request bodies and individual response events are capped at 256 MiB.
 
-To use HTTP from Codex, set `supports_websockets = false` in the provider
-configuration and resume the session. HTTP acceptance of a large conversation
-depends on the upstream service's limits.
+With `supports_websockets = true`, Codex falls back to HTTP after exhausting its
+WebSocket stream retries, including upstream size rejections. The configuration
+above allows two retries before fallback. To start with HTTP, set
+`supports_websockets = false` and resume the session. HTTP acceptance of a large
+conversation depends on the upstream service's limits.
 
 ## Observability
 
