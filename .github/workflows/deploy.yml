@@ -1,0 +1,72 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - name: Deploy and check health
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set +x
+          set -euo pipefail
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_PORT DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!name}" ]]; then
+              printf '::error::Missing deployment secret: %s\n' "$name"
+              exit 1
+            fi
+          done
+
+          umask 077
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf -- "$ssh_dir"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+
+          if ! ssh -F /dev/null -T \
+            -i "$ssh_dir/key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o IdentityAgent=none \
+            -o StrictHostKeyChecking=yes \
+            -o HostKeyAlias=deployment \
+            -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            -o LogLevel=ERROR \
+            -p "$DEPLOY_PORT" \
+            -l "$DEPLOY_USER" \
+            -- "$DEPLOY_HOST" /usr/local/bin/deploy-codex-balancer \
+            > "$ssh_dir/deploy.log" 2>&1; then
+            printf '::error::Deployment failed. Inspect the server through the private SSH connection.\n'
+            exit 1
+          fi
+
+          if ! grep -Eq '^deployed [0-9a-f]{40}$' "$ssh_dir/deploy.log"; then
+            printf '::error::Deployment did not report a verified revision.\n'
+            exit 1
+          fi
+          grep -E '^deployed [0-9a-f]{40}$' "$ssh_dir/deploy.log"
+          printf 'Deployment succeeded; service and health checks passed.\n'
