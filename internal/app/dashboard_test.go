@@ -857,7 +857,7 @@ func TestDashboardRoutingShowsTokenUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(payload)
-	for _, expected := range []string{`class="has-tooltip client-location" data-tooltip="United States"`, `aria-label="United States"`, `>🇺🇸</span> ret</td>`, "<th>Model (thinking mode)</th>", "<td>☀️ xhigh</td>", "<th>Cache %</th>", "<th>Context tokens<br>Compactions</th>", "<th>Cost</th>", "<td>$0.012</td>", "Codex thread: 2private", "Latest response tokens: 2.3K", "Compactions: 1"} {
+	for _, expected := range []string{`class="has-tooltip client-location" data-tooltip="United States"`, `aria-label="United States"`, `>🇺🇸</span> ret</td>`, "<th>Model</th>", "<td>☀️ xhigh</td>", "<th>Cache %</th>", "<th>Context tokens<br>Compactions</th>", "<th>Cost</th>", "<td>$0.012</td>", "Codex thread: 2private", "Latest response tokens: 2.3K", "Compactions: 1"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard missing %q", expected)
 		}
