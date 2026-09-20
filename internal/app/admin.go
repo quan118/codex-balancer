@@ -5,6 +5,7 @@ import (
 	"context"
 	"html/template"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -131,6 +132,12 @@ func (s *server) renderAdmin(w http.ResponseWriter, r *http.Request, session adm
 		s.adminError(w, r, err)
 		return
 	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		if keys[i].RevokedAt.IsZero() != keys[j].RevokedAt.IsZero() {
+			return keys[i].RevokedAt.IsZero()
+		}
+		return keys[i].CreatedAt.After(keys[j].CreatedAt)
+	})
 	for _, key := range keys {
 		used := usage[key.Name]
 		view.Keys = append(view.Keys, adminKeyView{Name: key.Name, Active: key.RevokedAt.IsZero(), Created: key.CreatedAt.Format("2006-01-02"), Input: formatTokenCount(used.InputTokens), Cached: formatTokenCount(used.InputDetails.CachedTokens), Output: formatTokenCount(used.OutputTokens), Total: formatTokenCount(used.TotalTokens)})
