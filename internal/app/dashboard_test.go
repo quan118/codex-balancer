@@ -460,7 +460,7 @@ func TestDashboardAccountValuesOmitRedundantUnitsAndZeros(t *testing.T) {
 	for range 100 {
 		stats.applyRouted(now, "", "", "account-b", "", "", "", turnMetadata{})
 	}
-	server := &server{pool: &Pool{accounts: []*Account{account, other}}, stats: stats}
+	server := &server{pool: &Pool{accounts: []*Account{other, account}}, stats: stats}
 
 	view := server.currentDashboard(now)
 	if len(view.Accounts) != 2 {
@@ -584,7 +584,7 @@ func TestDashboardSeparatesManagedWorkspacesAndShowsSpendControl(t *testing.T) {
 	enterprise := testAccountWithPlan("enterprise", 0, "enterprise")
 	routable := testAccount("routable", 20)
 	server := &server{
-		pool:  &Pool{accounts: []*Account{business, enterprise, routable}},
+		pool:  &Pool{accounts: []*Account{enterprise, business, routable}},
 		stats: newStatsWithPrices(testPriceSnapshot(t)),
 	}
 

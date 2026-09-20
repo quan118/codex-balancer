@@ -343,9 +343,7 @@ func (c routingCandidate) roomierThan(other routingCandidate) bool {
 
 func (p *Pool) sorted() []*Account {
 	out := p.all()
-	slices.SortFunc(out, func(x, y *Account) int {
-		return cmp.Or(cmp.Compare(x.email(), y.email()), cmp.Compare(x.id(), y.id()))
-	})
+	slices.Reverse(out)
 	return out
 }
 

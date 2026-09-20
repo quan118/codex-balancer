@@ -349,7 +349,7 @@ func (s *Store) RevokeAPIKey(name string, at time.Time) (bool, error) {
 
 func (s *Store) ReadAccounts() ([]Account, error) {
 	rows, err := s.db.Query(`SELECT account_id, id_token, access_token, refresh_token, paused, routing_mode,
-		last_refresh_ns, last_used_at_ns, reauth FROM accounts ORDER BY account_id`)
+		last_refresh_ns, last_used_at_ns, reauth FROM accounts ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +381,7 @@ func (s *Store) MutateAccountsContext(ctx context.Context, change func([]Account
 	var accounts []Account
 	err := s.immediateContext(ctx, func(conn *sql.Conn) error {
 		rows, err := conn.QueryContext(ctx, `SELECT account_id, id_token, access_token, refresh_token,
-			paused, routing_mode, last_refresh_ns, last_used_at_ns, reauth FROM accounts ORDER BY account_id`)
+			paused, routing_mode, last_refresh_ns, last_used_at_ns, reauth FROM accounts ORDER BY rowid`)
 		if err != nil {
 			return err
 		}
