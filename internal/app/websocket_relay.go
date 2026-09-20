@@ -372,6 +372,7 @@ func (r *responsesWebSocketRelay) handleUpstream(message websocketMessage) bool 
 	parsed := message.kind == websocket.MessageText && json.Unmarshal(message.data, &event) == nil
 	if parsed {
 		r.lastUpstreamKind = websocketDiagnosticEvent(event.Type)
+		message.data = r.server.pool.clientUsageEvent(r.current.account, message.data, event)
 	}
 	if parsed && websocketRejection(event) == websocketRejectionUnauthorized {
 		r.handleInBandUnauthorized()
@@ -446,9 +447,6 @@ func (r *responsesWebSocketRelay) handleInBandUnauthorized() {
 
 func (r *responsesWebSocketRelay) handleUpstreamEvent(event websocketEnvelope) (websocketRejectionKind, bool) {
 	headers := websocketEventHeaders(event.Headers)
-	if len(headers) > 0 {
-		r.current.account.observe(headers)
-	}
 	rejection := websocketRejection(event)
 	if rejection != websocketRejectionNone {
 		r.server.handleWebSocketRejection(r.current.account, rejection, headers, r.thread)

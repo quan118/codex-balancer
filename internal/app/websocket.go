@@ -124,6 +124,7 @@ func (s *server) responsesWebSocket(w http.ResponseWriter, r *http.Request) {
 	if dial.resp != nil {
 		copyWebSocketHeaders(w.Header(), dial.resp.Header)
 	}
+	s.pool.clientUsage().writeHeaders(w.Header())
 	downstream, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		dial.conn.CloseNow()

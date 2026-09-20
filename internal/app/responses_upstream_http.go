@@ -128,6 +128,7 @@ func (s *server) forwardHTTPResponse(peer *httpResponsesDownstream, request *htt
 		observed.writeSucceeded = true
 	}
 	copyHTTPResponseHeaders(peer.writer.Header(), response.Header)
+	s.pool.clientUsage().writeHeaders(peer.writer.Header())
 	redactor := peer.redactor()
 	for _, name := range []string{"Retry-After", "X-Request-Id"} {
 		if value := peer.writer.Header().Get(name); value != "" {
@@ -185,7 +186,10 @@ func (s *server) deliverHTTPEvent(peer *httpResponsesDownstream, accounting *res
 		return errors.Join(errHTTPInvalidResponse, err)
 	}
 	headers := websocketEventHeaders(event.Headers)
-	accounting.account.account.observe(headers)
+	message.data = s.pool.clientUsageEvent(accounting.account.account, message.data, event)
+	if !peer.committed && (event.Type == "codex.rate_limits" || len(event.Headers) > 0) {
+		s.pool.clientUsage().writeHeaders(peer.writer.Header())
+	}
 	rejection := websocketRejection(event)
 	if rejection != websocketRejectionNone {
 		s.handleWebSocketRejection(accounting.account.account, rejection, headers, accounting.thread)

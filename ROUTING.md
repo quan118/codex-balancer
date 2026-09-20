@@ -21,6 +21,19 @@ WebSocket GET requests use upstream WebSockets, and HTTP POST requests use
 upstream HTTP. `/v1/responses`, `/codex/responses`, and `/v1/codex/responses`
 share admission and account-routing policy. There is no account-specific route.
 
+## Client usage reporting
+
+Response headers and default `codex.rate_limits` events report the pool's average
+used percentage for each quota window. Paused, signed-out, and non-routable
+accounts are excluded. Exhausted and cooling accounts remain in the average.
+Each window includes only accounts with known, finite usage. A window with
+conflicting durations is omitted.
+
+Each account has equal weight. This is an estimate when account quotas differ.
+Pooled reports omit reset times, credit balances, and plan metadata because those
+belong to individual accounts. Separate named quota categories pass through
+unchanged. Routing and the dashboard continue to use each account's own usage.
+
 ## Tool endpoints
 
 Codex calls standalone web search (`/v1/alpha/search`, used with responses-lite
