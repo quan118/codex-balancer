@@ -71,7 +71,6 @@ func (d *responsesWebSocketDialer) dial() (dial *websocketDial, failed *http.Res
 		}
 		routeSpan.End()
 	}()
-	poolResetTried := false
 	for attempt := 0; ; attempt++ {
 		var selection claimedRoutingDecision
 		if d.replacing != nil {
@@ -86,12 +85,6 @@ func (d *responsesWebSocketDialer) dial() (dial *websocketDial, failed *http.Res
 		}
 		account := decision.account
 		if account == nil {
-			if !poolResetTried {
-				poolResetTried = true
-				if d.recoverPool(decision.candidates) {
-					continue
-				}
-			}
 			return nil, nil, d.unavailable(errNoAccountAvailable)
 		}
 		if decision.moved() && strings.TrimSpace(d.request.Header.Get(codexTurnStateKey)) != "" {
@@ -293,12 +286,10 @@ func (d *responsesWebSocketDialer) rejectAccount(result upstreamWebSocketDial, a
 				d.server.log.Info("account stopped accepting new websockets", "account", id, "source", "handshake", "thread", d.thread, "status", status)
 			}
 			if workspaceUsageLimitReached(response.Header) {
-				d.resetRetried[id] = true
+				d.usageRetried[id] = true
 			}
-			// Once the pool is exhausted, let the fallback compare reset expiry
-			// across every account instead of spending this account's credit.
-			if !d.resetRetried[id] && d.server.pool.route(nil, nil).account != nil && d.server.recoverUsageLimit(d.request.Context(), account, result.sent) {
-				d.resetRetried[id] = true
+			if !d.usageRetried[id] && d.server.pool.route(nil, nil).account != nil && account.restoreFromUsageAfter(result.sent) {
+				d.usageRetried[id] = true
 				closeWebSocketResponse(response)
 				return true
 			}

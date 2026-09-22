@@ -93,17 +93,13 @@ func TestSelfServeBusinessRoutingFollowsUsage(t *testing.T) {
 	}
 }
 
-func TestSpendLimitCannotUseRateLimitReset(t *testing.T) {
+func TestSpendLimitCannotRestoreFromUsage(t *testing.T) {
 	for _, requestAge := range []time.Duration{time.Minute, -time.Minute} {
 		t.Run(requestAge.String(), func(t *testing.T) {
 			account := testAccountWithPlan("business", 2, "self_serve_business_prolite")
 			account.spendControl = &spendControlPayload{Reached: true}
-			adoptTestResetCredit(account, time.Now().Add(time.Hour))
-			s := &server{client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				t.Fatal("rate-limit reset requests must not try to recover a reached spend limit")
-				return nil, nil
-			})}}
-			if s.recoverUsageLimit(context.Background(), account, time.Now().Add(-requestAge)) {
+			account.markSpent()
+			if account.restoreFromUsageAfter(time.Now().Add(-requestAge)) {
 				t.Fatal("remaining rate-limit quota must not clear a reached spend limit")
 			}
 			if !account.routingCandidate().spent {

@@ -299,107 +299,6 @@ func (s *server) consumeResetCredit(ctx context.Context, account *Account, choos
 	}
 }
 
-func (s *server) recoverUsageLimit(ctx context.Context, account *Account, requestSent time.Time) bool {
-	account.resetMu.Lock()
-	defer account.resetMu.Unlock()
-	if account.restoreFromUsageAfter(requestSent) {
-		return true
-	}
-	candidate := account.routingCandidate()
-	// Rate-limit reset credits cannot restore a workspace spending allowance.
-	if spendLimitReached(candidate.spendControl) {
-		return false
-	}
-	if !candidate.spent {
-		return true
-	}
-	return s.resetAccountUsage(ctx, account, resetPriorityLead)
-}
-
-// The caller holds account.resetMu through consumption and quota refresh.
-func (s *server) resetAccountUsage(ctx context.Context, account *Account, lead time.Duration) bool {
-	result, creditID, err := s.consumeResetCredit(ctx, account, func(credits []resetCredit) (resetCredit, bool) {
-		return nextResetCredit(credits, time.Now(), lead)
-	})
-	if err != nil {
-		s.log.Warn("account reset failed", "account", account.id(), "credit", creditID, "error", err)
-		s.stats.note("account reset failed", account.id(), err.Error())
-		return false
-	}
-	if creditID == "" {
-		return false
-	}
-	if err := s.pollUsage(ctx, account); err != nil {
-		s.log.Warn("usage refresh after reset failed", "account", account.id(), "error", err)
-		s.stats.note("usage refresh after reset failed", account.id(), err.Error())
-		return false
-	}
-	s.log.Info("account reset", "account", account.id(), "credit", creditID, "outcome", result.Code, "windows_reset", result.WindowsReset)
-	s.stats.note("account reset", account.id(), result.Code)
-	restored := !account.routingCandidate().spent
-	return restored
-}
-
-// Recover one account when the entire pool is unavailable. Serialize selection
-// as well as consumption so concurrent callers do not reset different accounts.
-func (s *server) recoverPoolUsageLimit(ctx context.Context, excluded map[string]bool) *Account {
-	s.poolResetMu.Lock()
-	defer s.poolResetMu.Unlock()
-
-	attempted := make(map[string]bool)
-	for ctx.Err() == nil {
-		if ready := s.pool.route(nil, nil).account; ready != nil {
-			return ready
-		}
-		now := time.Now()
-		var next *Account
-		var credit resetCredit
-		for _, account := range s.pool.all() {
-			candidate := account.routingCandidate()
-			if candidate.available(now) {
-				return account
-			}
-			if excluded[candidate.id] || attempted[candidate.id] || !candidate.canResetUsage() {
-				continue
-			}
-			if candidate.resetCredits.fetchedAt.IsZero() || now.Sub(candidate.resetCredits.fetchedAt) >= accountDetailRefreshInterval {
-				if err := s.pollResetCredits(ctx, account); err != nil {
-					s.log.Warn("reset credits poll failed", "account", candidate.id, "error", err)
-					attempted[candidate.id] = true
-					continue
-				}
-				candidate = account.routingCandidate()
-			}
-			available, ok := nextResetCredit(candidate.resetCredits.details, time.Now(), 0)
-			if ok && (next == nil || resetCreditExpiresBefore(available, credit)) {
-				next, credit = account, available
-			}
-		}
-		if next == nil || ctx.Err() != nil {
-			return nil
-		}
-		attempted[next.id()] = true
-		next.resetMu.Lock()
-		// Another recovery or quota poll may have restored capacity while we
-		// fetched credit details or waited for the account's reset lock.
-		ready := s.pool.route(nil, nil).account
-		if ready == nil && s.pool.find(next.id()) == next && next.routingCandidate().canResetUsage() {
-			s.resetAccountUsage(ctx, next, 0)
-			ready = s.pool.route(nil, nil).account
-		}
-		next.resetMu.Unlock()
-		if ready != nil {
-			return ready
-		}
-	}
-	return nil
-}
-
-func (c routingCandidate) canResetUsage() bool {
-	return c.routingEnabled() && !c.paused && c.reauth == "" && c.spent &&
-		!spendLimitReached(c.spendControl) && c.resetCredits.known && c.resetCredits.count > 0
-}
-
 func (s *server) reauthorize(account *Account) error {
 	if !s.refreshed(account, account.id()) {
 		return fmt.Errorf("account %s needs reauth", account.id())
@@ -500,7 +399,6 @@ func (s *server) pollAccountData(ctx context.Context, every time.Duration, force
 			return
 		}
 	}
-	s.recoverPoolUsageLimit(ctx, nil)
 }
 
 func (s *server) watchUsage(ctx context.Context, every time.Duration) {

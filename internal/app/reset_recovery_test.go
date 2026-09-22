@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,7 +20,6 @@ type resetTestAPI struct {
 	mu       sync.Mutex
 	credits  map[string][]resetCredit
 	restored map[string]bool
-	failures map[string]bool
 	consumed []string
 }
 
@@ -28,7 +28,6 @@ func newResetTestAPI(t *testing.T, accounts ...*Account) *resetTestAPI {
 	api := &resetTestAPI{
 		credits:  map[string][]resetCredit{},
 		restored: map[string]bool{},
-		failures: map[string]bool{},
 	}
 	for _, account := range accounts {
 		_, credits, _ := account.bankedResets()
@@ -50,10 +49,6 @@ func newResetTestAPI(t *testing.T, accounts ...*Account) *resetTestAPI {
 				t.Errorf("consume request = %+v", request)
 			}
 			api.consumed = append(api.consumed, request.CreditID)
-			if api.failures[id] {
-				http.Error(w, "reset failed", http.StatusBadGateway)
-				return
-			}
 			api.restored[id] = true
 			api.credits[id] = nil
 			json.NewEncoder(w).Encode(consumeResetCreditResponse{Code: "reset", WindowsReset: 2})
@@ -109,105 +104,6 @@ func resetRecoveryServer(accounts ...*Account) *server {
 	}
 }
 
-func TestPoolRecoveryChoosesSoonestResetBeyondPriorityWindow(t *testing.T) {
-	now := time.Now()
-	later := testSpentAccountWithReset("later", now.Add(7*24*time.Hour))
-	later.RoutingMode = routingModePriority
-	soon := testSpentAccountWithReset("soon", now.Add(3*24*time.Hour))
-	soon.cooldown = now.Add(time.Hour)
-	api := newResetTestAPI(t, later, soon)
-	// A usage poll may know the count before fetching credit details.
-	soon.adoptResetCredits(time.Time{}, 1, nil)
-	s := resetRecoveryServer(later, soon)
-	if got := s.recoverPoolUsageLimit(context.Background(), nil); got != soon {
-		t.Fatalf("recovered = %v, want soon", got)
-	}
-	api.assertConsumed(t, "credit-soon")
-	if got := s.pool.route(nil, nil).account; got != soon {
-		t.Fatalf("route = %v, want recovered account", got)
-	}
-	if !later.routingCandidate().spent {
-		t.Fatal("later account should remain spent")
-	}
-}
-
-func TestPoolRecoveryPreservesCreditsWhileCapacityIsAvailable(t *testing.T) {
-	spent := testSpentAccountWithReset("spent", time.Now().Add(time.Minute))
-	healthy := testAccount("healthy", 20)
-	api := newResetTestAPI(t, spent, healthy)
-	s := resetRecoveryServer(spent, healthy)
-	if got := s.recoverPoolUsageLimit(context.Background(), nil); got != healthy {
-		t.Fatalf("available = %v, want healthy", got)
-	}
-	api.assertConsumed(t)
-}
-
-func TestPoolRecoverySkipsIneligibleAccountsAndCredits(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		mutate func(*Account)
-	}{
-		{"paused", func(a *Account) { a.Paused = true }},
-		{"signed out", func(a *Account) { a.Reauth = "expired" }},
-		{"workspace", func(a *Account) { a.planType = "business" }},
-		{"spending limit", func(a *Account) { a.spendControl = &spendControlPayload{Reached: true} }},
-		{"temporary cooldown", func(a *Account) { a.spent = false; a.cooldown = time.Now().Add(time.Hour) }},
-		{"expired credit", func(a *Account) { adoptTestResetCredit(a, time.Now().Add(-time.Minute)) }},
-		{"used credit", func(a *Account) { a.resetCredits.details[0].Status = "redeemed" }},
-		{"wrong credit type", func(a *Account) { a.resetCredits.details[0].ResetType = "other" }},
-		{"no credits", func(a *Account) { a.adoptResetCredits(time.Now(), 0, nil) }},
-		{"unknown credits", func(a *Account) { a.resetCredits = resetCreditState{} }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			account := testSpentAccountWithReset("account", time.Now().Add(time.Hour))
-			test.mutate(account)
-			api := newResetTestAPI(t, account)
-			s := resetRecoveryServer(account)
-			if got := s.recoverPoolUsageLimit(context.Background(), nil); got != nil {
-				t.Fatalf("recovered = %v, want none", got)
-			}
-			api.assertConsumed(t)
-		})
-	}
-}
-
-func TestPoolRecoveryTriesNextAccountAfterResetFailure(t *testing.T) {
-	now := time.Now()
-	first := testSpentAccountWithReset("first", now.Add(time.Hour))
-	second := testSpentAccountWithReset("second", now.Add(48*time.Hour))
-	api := newResetTestAPI(t, first, second)
-	api.failures[first.id()] = true
-	s := resetRecoveryServer(first, second)
-	if got := s.recoverPoolUsageLimit(context.Background(), nil); got != second {
-		t.Fatalf("recovered = %v, want second", got)
-	}
-	api.assertConsumed(t, "credit-first", "credit-second")
-}
-
-func TestPoolRecoveryHonorsExcludedAccounts(t *testing.T) {
-	now := time.Now()
-	first := testSpentAccountWithReset("first", now.Add(time.Hour))
-	second := testSpentAccountWithReset("second", now.Add(48*time.Hour))
-	api := newResetTestAPI(t, first, second)
-	s := resetRecoveryServer(first, second)
-	if got := s.recoverPoolUsageLimit(context.Background(), map[string]bool{first.id(): true}); got != second {
-		t.Fatalf("recovered = %v, want second", got)
-	}
-	api.assertConsumed(t, "credit-second")
-}
-
-func TestPoolRecoveryStopsWhenCancelled(t *testing.T) {
-	account := testSpentAccountWithReset("account", time.Now().Add(time.Hour))
-	api := newResetTestAPI(t, account)
-	s := resetRecoveryServer(account)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if got := s.recoverPoolUsageLimit(ctx, nil); got != nil {
-		t.Fatalf("recovered = %v, want none", got)
-	}
-	api.assertConsumed(t)
-}
-
 func TestNextResetCreditOrdersUndatedCreditsLast(t *testing.T) {
 	now := time.Now()
 	later := now.Add(72 * time.Hour)
@@ -226,94 +122,141 @@ func TestNextResetCreditOrdersUndatedCreditsLast(t *testing.T) {
 	}
 }
 
-func TestPoolRecoveryConcurrentCallsConsumeOneReset(t *testing.T) {
-	now := time.Now()
-	later := testSpentAccountWithReset("later", now.Add(7*24*time.Hour))
-	soon := testSpentAccountWithReset("soon", now.Add(3*24*time.Hour))
-	api := newResetTestAPI(t, later, soon)
-	s := resetRecoveryServer(later, soon)
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for range 12 {
-		wg.Go(func() {
-			<-start
-			if got := s.recoverPoolUsageLimit(context.Background(), nil); got != soon {
-				t.Errorf("recovered = %v, want soon", got)
+func TestUsagePollingPreservesResetsWhenPoolIsExhausted(t *testing.T) {
+	for _, force := range []bool{true, false} {
+		name := "scheduled"
+		if force {
+			name = "full"
+		}
+		t.Run(name, func(t *testing.T) {
+			now := time.Now()
+			later := testSpentAccountWithReset("later", now.Add(7*24*time.Hour))
+			soon := testSpentAccountWithReset("soon", now.Add(time.Hour))
+			api := newResetTestAPI(t, later, soon)
+			s := resetRecoveryServer(later, soon)
+			if force {
+				s.pollAllUsage(context.Background())
+			} else {
+				s.pollDueUsage(context.Background(), time.Minute)
+			}
+			api.assertConsumed(t)
+			if got := s.pool.route(nil, nil).account; got != nil {
+				t.Fatalf("route after polling = %v, want none", got)
 			}
 		})
 	}
-	close(start)
-	wg.Wait()
-	api.assertConsumed(t, "credit-soon")
 }
 
-func TestPollAllUsageRecoversExhaustedPool(t *testing.T) {
-	now := time.Now()
-	later := testSpentAccountWithReset("later", now.Add(7*24*time.Hour))
-	soon := testSpentAccountWithReset("soon", now.Add(3*24*time.Hour))
-	api := newResetTestAPI(t, later, soon)
-	s := resetRecoveryServer(later, soon)
-	s.pollAllUsage(context.Background())
-	api.assertConsumed(t, "credit-soon")
-	if got := s.pool.route(nil, nil).account; got != soon {
-		t.Fatalf("route after polling = %v, want soon", got)
+func TestHTTPPreservesResetsWhenPoolIsExhausted(t *testing.T) {
+	account := testSpentAccountWithReset("account", time.Now().Add(time.Hour))
+	api := newResetTestAPI(t, account)
+	s := resetRecoveryServer(account)
+	router, err := newResponseAccountRouter(s, httptest.NewRequest(http.MethodPost, "/v1/responses", nil), websocketRoute{}, "", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestWebSocketRecoversExhaustedPoolBeforeDialing(t *testing.T) {
-	now := time.Now()
-	later := testSpentAccountWithReset("later", now.Add(7*24*time.Hour))
-	soon := testSpentAccountWithReset("soon", now.Add(3*24*time.Hour))
-	api := newResetTestAPI(t, later, soon)
-	upstream := newWebSocketUpstream(t, func(_ string, conn *websocket.Conn, _ websocketEnvelope) {
-		writeWebSocketEvent(t, conn, map[string]any{"type": "response.created"})
-		writeWebSocketEvent(t, conn, map[string]any{"type": "response.completed"})
-	})
-	defer upstream.Close()
-	_, proxy := newWebSocketProxy(t, upstream.URL, []*Account{later, soon})
-	conn, _ := dialWebSocket(t, proxy.URL, http.Header{"Thread-Id": {"thread"}})
-	defer conn.CloseNow()
-	completeWebSocketTurn(t, conn, map[string]any{"type": "response.create", "input": []any{}})
-	api.assertConsumed(t, "credit-soon")
-	if got := upstream.RequestAccounts(); !reflect.DeepEqual(got, []string{"soon"}) {
-		t.Fatalf("upstream accounts = %v, want soon", got)
+	selected, err := router.selectHTTPAccount(websocketEnvelope{})
+	if selected != nil || !errors.Is(err, errNoAccountAvailable) {
+		t.Fatalf("selected = %v, error = %v, want no account available", selected, err)
 	}
+	api.assertConsumed(t)
 }
 
-func TestWebSocketLastAccountUsageLimitResetsEarliestCreditAcrossPool(t *testing.T) {
-	now := time.Now()
-	soon := testSpentAccountWithReset("soon", now.Add(30*time.Minute))
-	last := testSpentAccountWithReset("last", now.Add(2*time.Hour))
-	last.spent = false
-	api := newResetTestAPI(t, soon, last)
+func TestWebSocketPreservesResetsWhenPoolIsExhausted(t *testing.T) {
+	account := testSpentAccountWithReset("account", time.Now().Add(time.Hour))
+	api := newResetTestAPI(t, account)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("chatgpt-account-id") == last.id() {
-			w.WriteHeader(http.StatusTooManyRequests)
-			io.WriteString(w, `{"error":{"code":"usage_limit_reached"}}`)
-			return
-		}
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.CloseNow()
-		conn.Read(r.Context())
+		t.Error("exhausted pool must not dial upstream")
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer upstream.Close()
-	s := resetRecoveryServer(soon, last)
+	s := resetRecoveryServer(account)
 	s.upstream = upstream.URL
 	dialer, err := newResponsesWebSocketDialer(s, httptest.NewRequest(http.MethodGet, "/v1/responses", nil), websocketRoute{}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	dial, response, err := dialer.dial()
-	if err != nil || response != nil || dial == nil {
-		t.Fatalf("dial = %v, response = %v, error = %v", dial, response, err)
+	if dial != nil || response != nil || !errors.Is(err, errNoAccountAvailable) {
+		t.Fatalf("dial = %v, response = %v, error = %v, want no account available", dial, response, err)
 	}
-	defer dial.conn.CloseNow()
-	if dial.account != soon {
-		t.Fatalf("account = %s, want soon", dial.account.id())
+	api.assertConsumed(t)
+}
+
+func TestWebSocketUsageLimitPreservesResets(t *testing.T) {
+	for _, healthyFallback := range []bool{false, true} {
+		name := "exhausted pool"
+		if healthyFallback {
+			name = "healthy fallback"
+		}
+		t.Run(name, func(t *testing.T) {
+			now := time.Now()
+			spent := testSpentAccountWithReset("spent", now.Add(30*time.Minute))
+			limited := testSpentAccountWithReset("limited", now.Add(2*time.Hour))
+			limited.spent = false
+			limited.RoutingMode = routingModePriority
+			accounts := []*Account{spent, limited}
+			var healthy *Account
+			if healthyFallback {
+				healthy = testAccount("healthy", 20)
+				accounts = append(accounts, healthy)
+			}
+			api := newResetTestAPI(t, accounts...)
+			var requestedMu sync.Mutex
+			var requested []string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id := r.Header.Get("chatgpt-account-id")
+				requestedMu.Lock()
+				requested = append(requested, id)
+				requestedMu.Unlock()
+				if id == limited.id() {
+					w.WriteHeader(http.StatusTooManyRequests)
+					io.WriteString(w, `{"error":{"code":"usage_limit_reached"}}`)
+					return
+				}
+				conn, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer conn.CloseNow()
+				conn.Read(r.Context())
+			}))
+			defer upstream.Close()
+			s := resetRecoveryServer(accounts...)
+			s.upstream = upstream.URL
+			dialer, err := newResponsesWebSocketDialer(s, httptest.NewRequest(http.MethodGet, "/v1/responses", nil), websocketRoute{}, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			dial, response, err := dialer.dial()
+			if dial != nil {
+				defer dial.conn.CloseNow()
+			}
+			wantRequests := []string{limited.id()}
+			if healthyFallback {
+				if err != nil || response != nil || dial == nil || dial.account != healthy {
+					t.Fatalf("dial = %v, response = %v, error = %v, want healthy account", dial, response, err)
+				}
+				wantRequests = append(wantRequests, healthy.id())
+			} else {
+				if dial != nil || response != nil || !errors.Is(err, errNoAccountAvailable) {
+					t.Fatalf("dial = %v, response = %v, error = %v, want no account available", dial, response, err)
+				}
+				var rejection *websocketSetupError
+				if !errors.As(err, &rejection) || rejection.status != http.StatusTooManyRequests || rejection.details.Code != "usage_limit_reached" {
+					t.Fatalf("error = %v, want upstream usage limit", err)
+				}
+			}
+			api.assertConsumed(t)
+			if !limited.routingCandidate().spent || !spent.routingCandidate().spent {
+				t.Fatal("exhausted accounts must remain spent")
+			}
+			requestedMu.Lock()
+			defer requestedMu.Unlock()
+			if !reflect.DeepEqual(requested, wantRequests) {
+				t.Fatalf("upstream accounts = %v, want %v", requested, wantRequests)
+			}
+		})
 	}
-	api.assertConsumed(t, "credit-soon")
 }

@@ -1,13 +1,10 @@
 package app
 
 import (
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
-
-	"go.opentelemetry.io/otel/attribute"
 )
 
 type responseAccount struct {
@@ -99,7 +96,7 @@ type responseAccountRouter struct {
 	owners       []string
 	skip         map[string]bool
 	reauthed     map[string]bool
-	resetRetried map[string]bool
+	usageRetried map[string]bool
 }
 
 func newResponseAccountRouter(s *server, request *http.Request, route websocketRoute, model, serviceTier string) (*responseAccountRouter, error) {
@@ -135,30 +132,8 @@ func newResponseAccountRouter(s *server, request *http.Request, route websocketR
 		owners:       durable.ordered(),
 		skip:         map[string]bool{},
 		reauthed:     map[string]bool{},
-		resetRetried: map[string]bool{},
+		usageRetried: map[string]bool{},
 	}, nil
-}
-
-func (d *responseAccountRouter) recoverPool(candidates []routingCandidate) bool {
-	observed := observation(d.request.Context())
-	ctx, span := observed.start(d.request.Context(), "codex.pool_recovery")
-	defer span.End()
-	observed.event(ctx, "pool_recovery_started", attribute.Bool("write_attempted", false))
-	excluded := maps.Clone(d.resetRetried)
-	allowed := d.server.allowedAccounts(d.model, d.serviceTier)
-	for _, candidate := range candidates {
-		if !accountAllowed(allowed, candidate.id) || d.skip[candidate.id] && !candidate.spent {
-			excluded[candidate.id] = true
-		}
-	}
-	recovered := d.server.recoverPoolUsageLimit(ctx, excluded)
-	observed.event(ctx, "pool_recovery_finished", attribute.Bool("recovered", recovered != nil), attribute.String("error_type", telemetryErrorClass(ctx.Err())))
-	if recovered == nil || excluded[recovered.id()] {
-		return false
-	}
-	delete(d.skip, recovered.id())
-	d.resetRetried[recovered.id()] = true
-	return true
 }
 
 func (d *responseAccountRouter) refreshBeforeDial(account *Account, retained bool) (bool, error) {
@@ -178,7 +153,6 @@ func (d *responseAccountRouter) refreshBeforeDial(account *Account, retained boo
 }
 
 func (d *responseAccountRouter) selectHTTPAccount(event websocketEnvelope) (*responseAccount, error) {
-	poolResetTried := false
 	for attempt := 0; ; attempt++ {
 		if err := d.request.Context().Err(); err != nil {
 			return nil, err
@@ -190,12 +164,6 @@ func (d *responseAccountRouter) selectHTTPAccount(event websocketEnvelope) (*res
 		}
 		account := selection.account
 		if account == nil {
-			if !poolResetTried {
-				poolResetTried = true
-				if d.recoverPool(selection.candidates) {
-					continue
-				}
-			}
 			return nil, errNoAccountAvailable
 		}
 		if selection.moved() && (!websocketRequestPortable(event) || strings.TrimSpace(d.request.Header.Get(codexTurnStateKey)) != "") {
