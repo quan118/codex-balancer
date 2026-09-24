@@ -494,6 +494,38 @@ func TestDashboardAccountValuesOmitRedundantUnitsAndZeros(t *testing.T) {
 	}
 }
 
+func TestDashboardShowsFiveHourQuota(t *testing.T) {
+	now := time.Date(2026, time.September, 24, 9, 0, 0, 0, time.UTC)
+	account := testAccount("account-a", 20)
+	account.primary = window{usedPercent: 35, minutes: 300, resetsAt: now.Add(2 * time.Hour), seenAt: now}
+	account.secondary = window{usedPercent: 80, minutes: 7 * 24 * 60, resetsAt: now.Add(4 * 24 * time.Hour), seenAt: now}
+	server := &server{pool: &Pool{accounts: []*Account{account}}, stats: newStatsWithPrices(testPriceSnapshot(t))}
+
+	stats := server.currentStats(now).Accounts[0]
+	if stats.FiveHourRemainingPercent == nil || *stats.FiveHourRemainingPercent != 65 || stats.FiveHourResetAt == nil || !stats.FiveHourResetAt.Equal(now.Add(2*time.Hour)) {
+		t.Fatalf("five-hour stats = %+v", stats)
+	}
+	view := server.currentDashboard(now)
+	if len(view.Accounts) != 1 || view.Accounts[0].FiveHour != "65" || view.Accounts[0].FiveHourResetIn != "2h00m" || view.Accounts[0].Weekly != "20" {
+		t.Fatalf("dashboard account = %+v", view.Accounts)
+	}
+	payload, err := renderDashboard("dashboard", view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"<th>5h remaining %</th>", "<th>5h reset in</th>", "<td>65</td>", "<td class=\"dim\">2h00m</td>"} {
+		if !strings.Contains(string(payload), expected) {
+			t.Fatalf("dashboard missing %q", expected)
+		}
+	}
+
+	account.primary = window{usedPercent: 35, minutes: 5, seenAt: now}
+	stats = server.currentStats(now).Accounts[0]
+	if stats.FiveHourRemainingPercent != nil || stats.FiveHourResetAt != nil {
+		t.Fatalf("mislabeled non-five-hour window: %+v", stats)
+	}
+}
+
 func TestDashboardPlanLeavesOtherPlansUnchanged(t *testing.T) {
 	for _, plan := range []string{"pro", "prolite", "business", "enterprise", "self_serve_business_unknown", ""} {
 		if got := dashboardPlan(plan); got != plan {

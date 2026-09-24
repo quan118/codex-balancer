@@ -427,7 +427,7 @@ func (r *responsesWebSocketRelay) canRetryUsageLimit() bool {
 	allowed := r.server.allowedAccounts(turn.model, turn.serviceTier)
 	now := time.Now()
 	for _, account := range r.server.pool.all() {
-		candidate := account.routingCandidate()
+		candidate := r.server.pool.routingCandidate(account)
 		if candidate.id != r.current.account.id() && candidate.available(now) && accountAllowed(allowed, candidate.id) {
 			return true
 		}

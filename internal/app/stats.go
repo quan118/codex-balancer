@@ -692,23 +692,25 @@ type statsResponse struct {
 }
 
 type accountStatsResponse struct {
-	ID                     string                        `json:"id"`
-	Email                  string                        `json:"email,omitempty"`
-	Plan                   string                        `json:"plan"`
-	Status                 accountStatus                 `json:"status"`
-	RoutingMode            routingMode                   `json:"routing_mode"`
-	RoutingPriority        *routingPriorityStatsResponse `json:"routing_priority,omitempty"`
-	WeeklyRemainingPercent *float64                      `json:"weekly_remaining_percent"`
-	BankedResets           *int64                        `json:"banked_resets"`
-	ResetCredits           []resetCreditStatsResponse    `json:"reset_credits,omitempty"`
-	ResetAt                *time.Time                    `json:"reset_at"`
-	RoutedCredits          *float64                      `json:"routed_credits,omitempty"`
-	RoutedCreditsSince     *time.Time                    `json:"routed_credits_since,omitempty"`
-	SpendControl           *spendControlStatsResponse    `json:"spend_control,omitempty"`
-	Turns                  int64                         `json:"turns"`
-	OpenWebSockets         int64                         `json:"open_websockets"`
-	RateLimits             int64                         `json:"rate_limits"`
-	Activity               []int64                       `json:"activity"`
+	ID                       string                        `json:"id"`
+	Email                    string                        `json:"email,omitempty"`
+	Plan                     string                        `json:"plan"`
+	Status                   accountStatus                 `json:"status"`
+	RoutingMode              routingMode                   `json:"routing_mode"`
+	RoutingPriority          *routingPriorityStatsResponse `json:"routing_priority,omitempty"`
+	WeeklyRemainingPercent   *float64                      `json:"weekly_remaining_percent"`
+	FiveHourRemainingPercent *float64                      `json:"five_hour_remaining_percent"`
+	FiveHourResetAt          *time.Time                    `json:"five_hour_reset_at"`
+	BankedResets             *int64                        `json:"banked_resets"`
+	ResetCredits             []resetCreditStatsResponse    `json:"reset_credits,omitempty"`
+	ResetAt                  *time.Time                    `json:"reset_at"`
+	RoutedCredits            *float64                      `json:"routed_credits,omitempty"`
+	RoutedCreditsSince       *time.Time                    `json:"routed_credits_since,omitempty"`
+	SpendControl             *spendControlStatsResponse    `json:"spend_control,omitempty"`
+	Turns                    int64                         `json:"turns"`
+	OpenWebSockets           int64                         `json:"open_websockets"`
+	RateLimits               int64                         `json:"rate_limits"`
+	Activity                 []int64                       `json:"activity"`
 }
 
 type spendControlStatsResponse struct {
@@ -753,10 +755,26 @@ func (s *server) statsResponseAt(now time.Time, snapshot Snapshot) statsResponse
 	for _, account := range s.pool.sorted() {
 		claims := account.claims()
 		plan := account.plan()
-		candidate := account.routingCandidate()
+		candidate := s.pool.routingCandidate(account)
 		primary, secondary := candidate.primary, candidate.secondary
 		traffic := snapshot.Accounts[claims.Auth.AccountID]
 		weekly := longestWindow(primary, secondary)
+		var fiveHour window
+		for _, candidate := range []window{primary, secondary} {
+			if candidate.known() && candidate.minutes == 5*60 {
+				fiveHour = candidate
+				break
+			}
+		}
+		var fiveHourRemaining *float64
+		if remaining, known := remainingPercent(fiveHour); known {
+			fiveHourRemaining = &remaining
+		}
+		var fiveHourResetAt *time.Time
+		if fiveHour.known() && fiveHour.resetsAt.After(now) {
+			reset := fiveHour.resetsAt
+			fiveHourResetAt = &reset
+		}
 		var weeklyRemaining *float64
 		if remaining, known := remainingPercent(weekly); known {
 			weeklyRemaining = &remaining
@@ -796,23 +814,25 @@ func (s *server) statsResponseAt(now time.Time, snapshot Snapshot) statsResponse
 		}
 		spendControl := spendControlStats(candidate.spendControl)
 		out.Accounts = append(out.Accounts, accountStatsResponse{
-			ID:                     claims.Auth.AccountID,
-			Email:                  maskEmail(claims.Email),
-			Plan:                   plan,
-			Status:                 status,
-			RoutingMode:            candidate.mode,
-			RoutingPriority:        routingPriority,
-			WeeklyRemainingPercent: weeklyRemaining,
-			BankedResets:           bankedResets,
-			ResetCredits:           resetCredits,
-			ResetAt:                resetAt,
-			RoutedCredits:          routedCredits,
-			RoutedCreditsSince:     routedCreditsSince,
-			SpendControl:           spendControl,
-			Turns:                  traffic.Turns,
-			OpenWebSockets:         traffic.WSOpen,
-			RateLimits:             traffic.Limited,
-			Activity:               append([]int64{}, traffic.Activity...),
+			ID:                       claims.Auth.AccountID,
+			Email:                    maskEmail(claims.Email),
+			Plan:                     plan,
+			Status:                   status,
+			RoutingMode:              candidate.mode,
+			RoutingPriority:          routingPriority,
+			WeeklyRemainingPercent:   weeklyRemaining,
+			FiveHourRemainingPercent: fiveHourRemaining,
+			FiveHourResetAt:          fiveHourResetAt,
+			BankedResets:             bankedResets,
+			ResetCredits:             resetCredits,
+			ResetAt:                  resetAt,
+			RoutedCredits:            routedCredits,
+			RoutedCreditsSince:       routedCreditsSince,
+			SpendControl:             spendControl,
+			Turns:                    traffic.Turns,
+			OpenWebSockets:           traffic.WSOpen,
+			RateLimits:               traffic.Limited,
+			Activity:                 append([]int64{}, traffic.Activity...),
 		})
 	}
 	return out

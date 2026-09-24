@@ -76,6 +76,27 @@ func loginTestAdmin(t *testing.T, h http.Handler) (*http.Cookie, string) {
 	return cookie, adminFormCSRF(t, page)
 }
 
+func TestAdminBlockedEmailsSetting(t *testing.T) {
+	account := testAccount("owner", 0)
+	srv := newTestServer(t, []*Account{account})
+	enableTestAdmin(t, srv)
+	handler := srv.routes()
+	cookie, csrf := loginTestAdmin(t, handler)
+	response := adminRequest(handler, http.MethodPost, "/admin/settings/blocked-emails", url.Values{
+		"csrf":           {csrf},
+		"blocked-emails": {"OWNER@example.com"},
+	}, cookie)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "owner@example.com") {
+		t.Fatalf("save status=%d body=%s", response.Code, response.Body.String())
+	}
+	if decision := srv.pool.route(nil, nil); decision.account != nil {
+		t.Fatalf("blocked account routed: %+v", decision)
+	}
+	if stored, err := srv.pool.store.raw.BlockedEmails(); err != nil || stored != `["owner@example.com"]` {
+		t.Fatalf("stored blocked emails = %q, %v", stored, err)
+	}
+}
+
 func TestAdminPasswordSetResetAndDisable(t *testing.T) {
 	srv := newTestServer(t, nil)
 	set := func(password, confirm string) error {

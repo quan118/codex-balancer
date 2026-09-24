@@ -70,6 +70,8 @@ type dashboardAccountView struct {
 	Status          accountStatus
 	StatusInfo      string
 	Weekly          string
+	FiveHour        string
+	FiveHourResetIn string
 	Banked          string
 	BankedInfo      string
 	ResetIn         string
@@ -401,6 +403,14 @@ func (s *server) currentDashboard(now time.Time) dashboardView {
 		if account.WeeklyRemainingPercent != nil {
 			weekly = formatDecimal(*account.WeeklyRemainingPercent)
 		}
+		fiveHour := "--"
+		if account.FiveHourRemainingPercent != nil {
+			fiveHour = formatDecimal(*account.FiveHourRemainingPercent)
+		}
+		fiveHourResetIn := "--"
+		if account.FiveHourResetAt != nil {
+			fiveHourResetIn = short(account.FiveHourResetAt.Sub(now))
+		}
 		banked := "--"
 		if account.BankedResets != nil {
 			banked = dashboardNumber(*account.BankedResets)
@@ -423,6 +433,8 @@ func (s *server) currentDashboard(now time.Time) dashboardView {
 			Status:          account.Status,
 			StatusInfo:      dashboardAccountStatusInfo(now, account),
 			Weekly:          weekly,
+			FiveHour:        fiveHour,
+			FiveHourResetIn: fiveHourResetIn,
 			Banked:          banked,
 			BankedInfo:      bankedInfo,
 			ResetIn:         resetIn,
@@ -444,6 +456,7 @@ func (s *server) currentDashboard(now time.Time) dashboardView {
 		{accountChecking, "checking"},
 		{accountCooling, "cooling"},
 		{accountPaused, "paused"},
+		{accountBlocked, "blocked"},
 		{accountNeedsReauth, "need reauth"},
 	} {
 		if count := counts[item.status]; count > 0 {
@@ -759,6 +772,8 @@ func dashboardStatus(status accountStatus) dashboardStatusView {
 		return dashboardStatusView{Mark: "✕", Label: "reauth"}
 	case accountNotRouted:
 		return dashboardStatusView{Mark: "○", Label: "not routed"}
+	case accountBlocked:
+		return dashboardStatusView{Mark: "⏸", Label: "blocked"}
 	case accountCooling:
 		return dashboardStatusView{Mark: "◐", Label: "cooling"}
 	case accountChecking:
@@ -774,6 +789,8 @@ func dashboardStatus(status accountStatus) dashboardStatusView {
 
 func dashboardAccountStatusInfo(now time.Time, account accountStatsResponse) string {
 	switch account.Status {
+	case accountBlocked:
+		return "Excluded from routing by the blocked-emails setting."
 	case accountNotRouted:
 		return "This workspace plan is displayed here but excluded from routing."
 	case accountCooling:

@@ -267,12 +267,15 @@ func (s *server) refreshModels(ctx context.Context, clientVersion string) error 
 	}
 	skipped := make([]skippedAccount, 0, len(accounts))
 	for _, account := range accounts {
-		candidate := account.routingCandidate()
+		candidate := s.pool.routingCandidate(account)
 		if candidate.id == "" {
 			continue
 		}
-		if candidate.paused || candidate.reauth != "" {
+		if candidate.blocked || candidate.paused || candidate.reauth != "" {
 			reason := "paused"
+			if candidate.blocked {
+				reason = "blocked"
+			}
 			if candidate.reauth != "" {
 				reason = "needs_reauth"
 			}

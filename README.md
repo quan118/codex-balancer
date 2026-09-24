@@ -40,6 +40,16 @@ codex-balancer accounts mode you@example.com priority
 codex-balancer accounts mode you@example.com normal
 ```
 
+To exclude accounts by email without removing them, set a persistent routing
+exclusion. Matching ignores letter case, and running servers pick up changes
+within 500 ms. The admin Settings page offers the same control.
+
+```sh
+codex-balancer settings set blocked-emails 'you@example.com,other@example.com'
+codex-balancer settings get blocked-emails
+codex-balancer settings set blocked-emails '' # clear exclusions
+```
+
 Adding an account preserves its existing model training setting.
 Self-serve Business Pro Lite
 (`self_serve_business_prolite`) accounts route using their per-account quota.

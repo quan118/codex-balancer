@@ -47,6 +47,13 @@
 <option value="off" {{if eq .Mode "off"}}selected{{end}}>force standard</option>
 </select><button type="submit">Save fast mode</button></div>
 <p class="muted">Changing this restarts existing connections and can interrupt active turns. Account routing preferences still apply.</p>
+</form>
+<form action="/admin/settings/blocked-emails" method="post" hx-post="/admin/settings/blocked-emails" hx-target="#settings-panel" hx-swap="outerHTML" hx-disabled-elt="find button">
+{{template "csrf" .CSRF}}
+<label for="blocked-emails">Blocked account emails</label>
+<textarea id="blocked-emails" name="blocked-emails" rows="3" placeholder="account@example.com">{{.BlockedEmails}}</textarea>
+<button type="submit">Save blocked emails</button>
+<p class="muted">One email per line. Matching ignores letter case. Saving an empty list allows routing again.</p>
 </form></section>{{end}}
 
 {{define "accounts-panel"}}<section id="accounts-panel">

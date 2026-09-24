@@ -16,6 +16,7 @@ const (
 	routingReasonProvisionalConflict    routingReason = "provisional_claim_unavailable"
 	routingReasonOwnerRemoved           routingReason = "owner_removed"
 	routingReasonOwnerPaused            routingReason = "owner_paused"
+	routingReasonOwnerBlocked           routingReason = "owner_blocked"
 	routingReasonOwnerSignedOut         routingReason = "owner_signed_out"
 	routingReasonOwnerSpent             routingReason = "owner_spent"
 	routingReasonOwnerNotRoutable       routingReason = "owner_not_routable"
@@ -105,6 +106,8 @@ func routingDecisionReason(decision routingDecision, allowed map[string]bool, sk
 	}
 	owner := decision.candidates[index]
 	switch {
+	case owner.blocked:
+		return routingReasonOwnerBlocked
 	case !owner.routingEnabled():
 		return routingReasonOwnerNotRoutable
 	case owner.paused:
@@ -122,7 +125,13 @@ func (s *server) allowedAccounts(model, serviceTier string) map[string]bool {
 	if s.catalog == nil {
 		return nil
 	}
-	return s.catalog.allowedAccounts(s.pool.all(), model, serviceTier)
+	var accounts []*Account
+	for _, account := range s.pool.all() {
+		if !s.pool.routingCandidate(account).blocked {
+			accounts = append(accounts, account)
+		}
+	}
+	return s.catalog.allowedAccounts(accounts, model, serviceTier)
 }
 
 func accountAllowed(allowed map[string]bool, id string) bool {

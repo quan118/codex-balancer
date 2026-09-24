@@ -51,6 +51,7 @@ td { font-weight: 400 }
 .status-mark.status-priority { color: var(--amber-11) }
 .status-mark.status-cooling { color: var(--amber-11) }
 .status-mark.status-needs_reauth { color: var(--red-11) }
+.status-mark.status-blocked { color: var(--amber-11) }
 .spark { letter-spacing: .08em }
 .empty { padding: .5rem 0 }
 .overview { display: flex; gap: 1rem; margin: 0; overflow-x: auto }
@@ -130,6 +131,8 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums }
 <th>Account</th>
 <th>Plan</th>
 <th>Status</th>
+<th>5h remaining %</th>
+<th>5h reset in</th>
 <th>Weekly %</th>
 <th>Banked</th>
 <th>Reset in</th>
@@ -142,6 +145,8 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums }
 <td>{{.Name}}</td>
 <td class="dim">{{dashboardPlan .Plan}}</td>
 {{$status := dashboardStatus .Status}}<td class="status">{{if .StatusInfo}}<span id="{{.DOMID}}-status" class="has-tooltip" data-tooltip="{{.StatusInfo}}" aria-describedby="dashboard-tooltip" tabindex="0"><span class="status-mark status-{{.Status}}">{{$status.Mark}}</span> {{$status.Label}}</span>{{else}}<span class="status-mark status-{{.Status}}">{{$status.Mark}}</span> {{$status.Label}}{{end}}</td>
+<td>{{.FiveHour}}</td>
+<td class="dim">{{.FiveHourResetIn}}</td>
 <td>{{.Weekly}}</td>
 <td>{{if .BankedInfo}}<span id="{{.DOMID}}-banked" class="has-tooltip" data-tooltip="{{.BankedInfo}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Banked}}</span>{{else}}{{.Banked}}{{end}}</td>
 <td class="dim">{{.ResetIn}}</td>

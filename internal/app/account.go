@@ -80,6 +80,7 @@ const (
 	accountPaused      accountStatus = "paused"
 	accountNeedsReauth accountStatus = "needs_reauth"
 	accountNotRouted   accountStatus = "not_routed"
+	accountBlocked     accountStatus = "blocked"
 
 	routingModeNormal   routingMode = "normal"
 	routingModePriority routingMode = "priority"

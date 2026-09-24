@@ -40,17 +40,18 @@ type adminKeyView struct {
 }
 
 type adminView struct {
-	CSRF        string
-	Mode        fastMode
-	ModeLabel   string
-	Accounts    []adminAccountView
-	Keys        []adminKeyView
-	Connections int64
-	Events      []Event
-	Notice      string
-	NoticePanel string
-	Error       bool
-	Secret      string
+	CSRF          string
+	Mode          fastMode
+	ModeLabel     string
+	BlockedEmails string
+	Accounts      []adminAccountView
+	Keys          []adminKeyView
+	Connections   int64
+	Events        []Event
+	Notice        string
+	NoticePanel   string
+	Error         bool
+	Secret        string
 }
 
 func (s *server) adminRoutes() http.Handler {
@@ -61,6 +62,7 @@ func (s *server) adminRoutes() http.Handler {
 	mux.HandleFunc("POST /admin/login", s.adminLogin)
 	mux.HandleFunc("POST /admin/logout", s.requireAdmin(s.adminLogout))
 	mux.HandleFunc("POST /admin/settings", s.requireAdmin(s.adminSettings))
+	mux.HandleFunc("POST /admin/settings/blocked-emails", s.requireAdmin(s.adminBlockedEmails))
 	mux.HandleFunc("POST /admin/accounts/{action}", s.requireAdmin(s.adminAccountAction))
 	mux.HandleFunc("POST /admin/keys/{action}", s.requireAdmin(s.adminKeyAction))
 	mux.HandleFunc("GET /admin/status", s.requireAdmin(func(w http.ResponseWriter, r *http.Request, session adminSession) {
@@ -107,8 +109,9 @@ func (s *server) renderAdmin(w http.ResponseWriter, r *http.Request, session adm
 	view := adminView{CSRF: session.csrf, Notice: notice, NoticePanel: panel, Secret: secret, Error: status >= 400}
 	view.Mode, _ = s.fastMode.snapshot()
 	view.ModeLabel = view.Mode.label()
+	view.BlockedEmails = strings.Join(s.pool.blockedEmailList(), "\n")
 	for _, account := range s.pool.sorted() {
-		candidate := account.routingCandidate()
+		candidate := s.pool.routingCandidate(account)
 		row := adminAccountView{ID: account.id(), Name: label(account), Plan: dashboardPlan(account.plan()), Status: dashboardStatus(candidate.status(time.Now())).Label, Paused: candidate.paused, Mode: string(candidate.mode)}
 		row.Banked = "—"
 		if candidate.resetCredits.known {
@@ -173,6 +176,20 @@ func (s *server) adminSettings(w http.ResponseWriter, r *http.Request, session a
 	}
 	s.stats.note("fast mode changed", "", mode.label())
 	s.renderAdmin(w, r, session, "settings-panel", "Saved. Fast mode: "+mode.label()+".", "", http.StatusOK)
+}
+
+func (s *server) adminBlockedEmails(w http.ResponseWriter, r *http.Request, session adminSession) {
+	value := r.PostForm.Get("blocked-emails")
+	if _, err := parseBlockedEmails(value); err != nil {
+		s.renderAdmin(w, r, session, "settings-panel", err.Error(), "", http.StatusUnprocessableEntity)
+		return
+	}
+	if err := s.saveBlockedEmails(value); err != nil {
+		s.adminError(w, r, err)
+		return
+	}
+	s.stats.note("blocked emails changed", "", "Routing exclusions updated.")
+	s.renderAdmin(w, r, session, "settings-panel", "Saved blocked emails.", "", http.StatusOK)
 }
 
 func (s *server) adminAccountAction(w http.ResponseWriter, r *http.Request, session adminSession) {
