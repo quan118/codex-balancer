@@ -56,7 +56,7 @@
 {{template "events" .}}
 </div>
 </section>
-{{if .Admin}}{{template "keys-section" .}}{{end}}
+{{if .Admin}}{{template "blocked-emails-control" .}}{{template "keys-section" .}}{{end}}
 </main>{{end}}
 
 {{define "overview-update"}}<dl id="overview" class="overview" hx-swap-oob="morph">{{template "overview" .}}</dl>{{end}}
@@ -87,7 +87,9 @@
 <th>Plan</th>
 <th>Status</th>
 {{if $.Admin}}<th>Routing</th>
-{{end}}<th>Weekly %</th>
+{{end}}<th>5h remaining %</th>
+<th>5h reset in</th>
+<th>Weekly %</th>
 <th>Banked</th>
 <th>Credits</th>
 <th>Reset in</th>
@@ -102,7 +104,9 @@
 <td class="dim">{{if .PlanInfo}}<span id="{{.DOMID}}-plan" class="has-tooltip" data-tooltip="{{.PlanInfo}}" aria-describedby="dashboard-tooltip" tabindex="0">{{dashboardPlan .Plan}}</span>{{else}}{{dashboardPlan .Plan}}{{end}}</td>
 {{$status := dashboardStatus .Status}}<td class="status">{{if .StatusInfo}}<span id="{{.DOMID}}-status" class="has-tooltip" data-tooltip="{{.StatusInfo}}" aria-describedby="dashboard-tooltip" tabindex="0"><span class="status-mark status-{{.Status}}">{{$status.Mark}}</span> {{$status.Label}}</span>{{else}}<span class="status-mark status-{{.Status}}">{{$status.Mark}}</span> {{$status.Label}}{{end}}</td>
 {{if $.Admin}}<td>{{template "routing-control" ($.Admin.With .)}}</td>
-{{end}}<td>{{.Weekly}}</td>
+{{end}}<td>{{.FiveHour}}</td>
+<td class="dim">{{.FiveHourResetIn}}</td>
+<td>{{.Weekly}}</td>
 <td>{{if .BankedInfo}}<span id="{{.DOMID}}-banked" class="has-tooltip" data-tooltip="{{.BankedInfo}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Banked}}</span>{{else}}{{.Banked}}{{end}}{{if and $.Admin .ResetCreditID}}{{template "banked-reset-control" ($.Admin.With .)}}{{end}}</td>
 <td>{{if .CreditsInfo}}<span id="{{.DOMID}}-credits" class="has-tooltip" data-tooltip="{{.CreditsInfo}}" aria-describedby="dashboard-tooltip" tabindex="0">{{.Credits}}</span>{{else}}{{.Credits}}{{end}}</td>
 <td class="dim">{{.ResetIn}}</td>

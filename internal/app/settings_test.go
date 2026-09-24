@@ -46,6 +46,65 @@ func TestSettingsCLIAndPersistence(t *testing.T) {
 	}
 }
 
+func TestBlockedEmailsExcludeFreshAndRetainedRoutes(t *testing.T) {
+	owner := testAccount("owner", 0)
+	other := testAccount("other", 50)
+	server := newTestServer(t, []*Account{owner, other})
+	if err := server.saveBlockedEmails(" OWNER@EXAMPLE.COM, owner@example.com\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := server.pool.blockedEmailList(); !reflect.DeepEqual(got, []string{"owner@example.com"}) {
+		t.Fatalf("blocked emails = %v", got)
+	}
+	for _, owners := range [][]string{nil, {owner.id()}} {
+		decision := server.pool.route(owners, nil)
+		if decision.account == nil || decision.account.id() != other.id() {
+			t.Fatalf("owners=%v: route=%+v", owners, decision)
+		}
+	}
+	blockedStatus := accountStatus("")
+	for _, account := range server.currentStats(time.Now()).Accounts {
+		if account.ID == owner.id() {
+			blockedStatus = account.Status
+		}
+	}
+	if blockedStatus != accountBlocked {
+		t.Fatalf("blocked status = %s", blockedStatus)
+	}
+	if err := server.saveBlockedEmails(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := server.pool.route([]string{owner.id()}, nil).account; got == nil || got.id() != owner.id() {
+		t.Fatalf("owner did not resume routing: %v", got)
+	}
+	if err := server.saveBlockedEmails("not-an-email"); err == nil {
+		t.Fatal("accepted invalid email")
+	}
+}
+
+func TestBlockedEmailsCLIAndReload(t *testing.T) {
+	server := newTestServer(t, []*Account{testAccount("owner", 0), testAccount("other", 50)})
+	path := server.pool.store.path
+	if err := settingsCmd([]string{"set", "-state", path, "blocked-emails", "OWNER@example.com,other@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.reloadSettings(); err != nil {
+		t.Fatal(err)
+	}
+	if decision := server.pool.route(nil, nil); decision.account != nil {
+		t.Fatalf("blocked accounts routed: %+v", decision)
+	}
+	if err := settingsCmd([]string{"set", "-state", path, "blocked-emails", ""}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.reloadSettings(); err != nil {
+		t.Fatal(err)
+	}
+	if decision := server.pool.route(nil, nil); decision.account == nil {
+		t.Fatal("clearing blocked emails did not restore routing")
+	}
+}
+
 func TestSettingsMigrationPreservesRoutes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	store, err := openStateStore(path)
@@ -256,5 +315,24 @@ func TestFastModeChangeDuringHandshake(t *testing.T) {
 	owners, err := srv.pool.store.routeOwners("thread", "session")
 	if err != nil || fmt.Sprint(owners) != "[owner]" {
 		t.Fatalf("owners=%v, %v", owners, err)
+	}
+}
+
+func TestBlockedEmailsExcludeCreditFallbackAndActiveSockets(t *testing.T) {
+	owner := testAccountWithCredits("owner")
+	srv := newTestServer(t, []*Account{owner})
+	if got := srv.pool.route(nil, nil); got.account != owner || !got.creditFallback {
+		t.Fatalf("expected credit fallback: %+v", got)
+	}
+	if err := srv.saveBlockedEmails("owner@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	for _, owners := range [][]string{nil, {owner.id()}} {
+		if got := srv.pool.route(owners, nil); got.account != nil {
+			t.Fatalf("blocked credit account routed: %+v", got)
+		}
+	}
+	if srv.accountRoutable(owner.id()) {
+		t.Fatal("blocked account remains eligible for an active socket")
 	}
 }

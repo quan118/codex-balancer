@@ -162,7 +162,7 @@ func (s *server) accountRoutable(id string) bool {
 	if account == nil {
 		return false
 	}
-	candidate := account.routingCandidate()
+	candidate := s.pool.routingCandidate(account)
 	return candidate.routingEnabled() && !candidate.paused && candidate.reauth == ""
 }
 

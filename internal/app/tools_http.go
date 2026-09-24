@@ -54,7 +54,7 @@ func (s *server) proxyTool(w http.ResponseWriter, r *http.Request) {
 		account := retryAccount
 		retryAccount = nil
 		if account != nil {
-			candidate := account.routingCandidate()
+			candidate := s.pool.routingCandidate(account)
 			now := time.Now()
 			if s.pool.find(candidate.id) != account || !candidate.available(now) && !candidate.creditAvailable(now) {
 				account = nil

@@ -194,12 +194,14 @@ func (d dashboard) render() string {
 
 func (d dashboard) header() string {
 	styles := d.styles()
-	live, priority, credits, checking, cooling, dead, held, notRouted := 0, 0, 0, 0, 0, 0, 0, 0
+	live, priority, credits, checking, cooling, dead, held, notRouted, blocked := 0, 0, 0, 0, 0, 0, 0, 0, 0
 	now := time.Now()
 	for _, a := range d.pool.all() {
-		switch a.status(now) {
+		switch d.pool.routingCandidate(a).status(now) {
 		case accountPaused:
 			held++
+		case accountBlocked:
+			blocked++
 		case accountNeedsReauth:
 			dead++
 		case accountNotRouted:
@@ -235,6 +237,9 @@ func (d dashboard) header() string {
 	}
 	if held > 0 {
 		parts = append(parts, styles.dim.Render(fmt.Sprintf("%d paused", held)))
+	}
+	if blocked > 0 {
+		parts = append(parts, styles.warn.Render(fmt.Sprintf("%d blocked", blocked)))
 	}
 	if dead > 0 {
 		parts = append(parts, styles.bad.Render(fmt.Sprintf("%d need reauth", dead)))
@@ -321,12 +326,14 @@ func (d dashboard) accounts(limit int) string {
 		weekly := longestWindow(primary, secondary)
 		stat := d.snap.Accounts[a.id()]
 		now := time.Now()
-		candidate := a.routingCandidate()
+		candidate := d.pool.routingCandidate(a)
 
 		var status string
 		switch candidate.status(now) {
 		case accountPaused:
 			status = styles.dim.Render(fit("⏸ paused", statusW))
+		case accountBlocked:
+			status = styles.warn.Render(fit("⏸ blocked", statusW))
 		case accountNeedsReauth:
 			status = styles.bad.Render(fit("✕ "+reauth, statusW))
 		case accountNotRouted:

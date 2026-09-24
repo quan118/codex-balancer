@@ -726,29 +726,31 @@ type statsResponse struct {
 }
 
 type accountStatsResponse struct {
-	ID                     string `json:"id"`
-	Email                  string `json:"email,omitempty"`
-	privateEmail           string
-	Plan                   string                        `json:"plan"`
-	Subscription           *subscriptionStatsResponse    `json:"subscription,omitempty"`
-	Status                 accountStatus                 `json:"status"`
-	RoutingMode            routingMode                   `json:"routing_mode"`
-	RoutingPriority        *routingPriorityStatsResponse `json:"routing_priority,omitempty"`
-	WeeklyRemainingPercent *float64                      `json:"weekly_remaining_percent"`
-	BankedResets           *int64                        `json:"banked_resets"`
-	ResetCredits           []resetCreditStatsResponse    `json:"reset_credits,omitempty"`
-	Credits                *creditsPayload               `json:"credits,omitempty"`
-	ResetAt                *time.Time                    `json:"reset_at"`
-	ResetIn                string                        `json:"reset_in"`
-	RoutedCredits          *float64                      `json:"routed_credits,omitempty"`
-	RoutedCreditsSince     *time.Time                    `json:"routed_credits_since,omitempty"`
-	SpendControl           *spendControlStatsResponse    `json:"spend_control,omitempty"`
-	Turns                  int64                         `json:"turns"`
-	OpenWebSockets         int64                         `json:"open_websockets"`
-	RateLimits             int64                         `json:"rate_limits"`
-	Activity               []int64                       `json:"activity"`
-	Traffic24hPercent      int64                         `json:"traffic_24h_percent"`
-	MonthlyAPICost         string                        `json:"monthly_api_cost"`
+	FiveHourRemainingPercent *float64   `json:"five_hour_remaining_percent"`
+	FiveHourResetAt          *time.Time `json:"five_hour_reset_at"`
+	ID                       string     `json:"id"`
+	Email                    string     `json:"email,omitempty"`
+	privateEmail             string
+	Plan                     string                        `json:"plan"`
+	Subscription             *subscriptionStatsResponse    `json:"subscription,omitempty"`
+	Status                   accountStatus                 `json:"status"`
+	RoutingMode              routingMode                   `json:"routing_mode"`
+	RoutingPriority          *routingPriorityStatsResponse `json:"routing_priority,omitempty"`
+	WeeklyRemainingPercent   *float64                      `json:"weekly_remaining_percent"`
+	BankedResets             *int64                        `json:"banked_resets"`
+	ResetCredits             []resetCreditStatsResponse    `json:"reset_credits,omitempty"`
+	Credits                  *creditsPayload               `json:"credits,omitempty"`
+	ResetAt                  *time.Time                    `json:"reset_at"`
+	ResetIn                  string                        `json:"reset_in"`
+	RoutedCredits            *float64                      `json:"routed_credits,omitempty"`
+	RoutedCreditsSince       *time.Time                    `json:"routed_credits_since,omitempty"`
+	SpendControl             *spendControlStatsResponse    `json:"spend_control,omitempty"`
+	Turns                    int64                         `json:"turns"`
+	OpenWebSockets           int64                         `json:"open_websockets"`
+	RateLimits               int64                         `json:"rate_limits"`
+	Activity                 []int64                       `json:"activity"`
+	Traffic24hPercent        int64                         `json:"traffic_24h_percent"`
+	MonthlyAPICost           string                        `json:"monthly_api_cost"`
 }
 
 // Sign-in claims report the subscription period, not whether it will renew.
@@ -819,10 +821,26 @@ func (s *server) statsResponseAt(now time.Time, snapshot Snapshot) statsResponse
 	for _, account := range s.pool.sorted() {
 		claims := account.claims()
 		plan := account.plan()
-		candidate := account.routingCandidate()
+		candidate := s.pool.routingCandidate(account)
 		primary, secondary := candidate.primary, candidate.secondary
 		traffic := snapshot.Accounts[claims.Auth.AccountID]
 		weekly := longestWindow(primary, secondary)
+		var fiveHour window
+		for _, candidate := range []window{primary, secondary} {
+			if candidate.known() && candidate.minutes == 5*60 {
+				fiveHour = candidate
+				break
+			}
+		}
+		var fiveHourRemaining *float64
+		if remaining, known := remainingPercent(fiveHour); known {
+			fiveHourRemaining = &remaining
+		}
+		var fiveHourResetAt *time.Time
+		if fiveHour.known() && fiveHour.resetsAt.After(now) {
+			reset := fiveHour.resetsAt
+			fiveHourResetAt = &reset
+		}
 		var weeklyRemaining *float64
 		if remaining, known := remainingPercent(weekly); known {
 			weeklyRemaining = &remaining
@@ -865,28 +883,30 @@ func (s *server) statsResponseAt(now time.Time, snapshot Snapshot) statsResponse
 		}
 		spendControl := spendControlStats(candidate.spendControl)
 		out.Accounts = append(out.Accounts, accountStatsResponse{
-			ID:                     claims.Auth.AccountID,
-			Email:                  maskEmail(claims.Email),
-			privateEmail:           claims.Email,
-			Plan:                   plan,
-			Subscription:           subscriptionStats(claims, plan),
-			Status:                 status,
-			RoutingMode:            candidate.mode,
-			RoutingPriority:        routingPriority,
-			WeeklyRemainingPercent: weeklyRemaining,
-			BankedResets:           bankedResets,
-			ResetCredits:           resetCredits,
-			Credits:                candidate.credits,
-			ResetAt:                resetAt,
-			ResetIn:                resetIn,
-			RoutedCredits:          routedCredits,
-			RoutedCreditsSince:     routedCreditsSince,
-			SpendControl:           spendControl,
-			Turns:                  traffic.Turns,
-			OpenWebSockets:         traffic.WSOpen,
-			RateLimits:             traffic.Limited,
-			Activity:               append([]int64{}, traffic.Activity...),
-			MonthlyAPICost:         formatAPIPrice(traffic.APICostNanoDollars, traffic.UnpricedResponses),
+			ID:                       claims.Auth.AccountID,
+			Email:                    maskEmail(claims.Email),
+			privateEmail:             claims.Email,
+			Plan:                     plan,
+			Subscription:             subscriptionStats(claims, plan),
+			Status:                   status,
+			RoutingMode:              candidate.mode,
+			RoutingPriority:          routingPriority,
+			WeeklyRemainingPercent:   weeklyRemaining,
+			BankedResets:             bankedResets,
+			ResetCredits:             resetCredits,
+			Credits:                  candidate.credits,
+			ResetAt:                  resetAt,
+			ResetIn:                  resetIn,
+			RoutedCredits:            routedCredits,
+			RoutedCreditsSince:       routedCreditsSince,
+			SpendControl:             spendControl,
+			Turns:                    traffic.Turns,
+			OpenWebSockets:           traffic.WSOpen,
+			RateLimits:               traffic.Limited,
+			Activity:                 append([]int64{}, traffic.Activity...),
+			MonthlyAPICost:           formatAPIPrice(traffic.APICostNanoDollars, traffic.UnpricedResponses),
+			FiveHourRemainingPercent: fiveHourRemaining,
+			FiveHourResetAt:          fiveHourResetAt,
 		})
 	}
 	traffic := trafficPercentages(out.Accounts)

@@ -101,3 +101,13 @@
 </tr>{{end}}{{else}}<tr><td class="empty" colspan="10">no API keys yet</td></tr>{{end}}</tbody>
 </table>
 {{end}}
+
+{{define "blocked-emails-control"}}<section id="settings-panel">
+<h2>Routing exclusions</h2>
+<form action="/admin/settings/blocked-emails" method="post" hx-post="/admin/settings/blocked-emails" hx-disabled-elt="find button">
+{{template "csrf" .Admin.CSRF}}
+<label for="blocked-emails">Blocked account emails</label>
+<textarea id="blocked-emails" name="blocked-emails" rows="3" placeholder="account@example.com">{{.Admin.BlockedEmails}}</textarea>
+<button class="action" type="submit">Save blocked emails</button>
+<p class="dim">One email per line. Matching ignores letter case. Saving an empty list allows routing again.</p>
+</form></section>{{end}}

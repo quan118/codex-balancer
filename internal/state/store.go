@@ -14,7 +14,7 @@ import (
 
 const (
 	ApplicationID = 0x43425853
-	schemaVersion = 9
+	schemaVersion = 10
 )
 
 const currentSchema = `CREATE TABLE accounts (
@@ -54,7 +54,7 @@ CREATE TABLE response_usage (
 	account_id TEXT REFERENCES accounts(account_id) ON DELETE SET NULL
 ) STRICT;
 CREATE INDEX response_usage_at ON response_usage (at_ns);
-CREATE INDEX response_usage_api_key ON response_usage (api_key_name);` + settingsSchema + adminSchema + modelsSchema + adminSessionsSchema
+CREATE INDEX response_usage_api_key ON response_usage (api_key_name);` + settingsSchema + adminSchema + modelsSchema + adminSessionsSchema + blockedEmailsSchema
 
 const settingsSchema = `CREATE TABLE settings (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -247,6 +247,12 @@ func (s *Store) initialize() error {
 			return err
 		}
 		version = 9
+	}
+	if version == 9 {
+		if err := s.migrateBlockedEmails(); err != nil {
+			return err
+		}
+		version = 10
 	}
 	if version != schemaVersion {
 		return fmt.Errorf("state schema %d is unsupported; expected %d", version, schemaVersion)

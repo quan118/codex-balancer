@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -20,10 +21,11 @@ const (
 )
 
 type Pool struct {
-	store     *StateStore
-	storageMu contextMutex
-	mu        sync.RWMutex
-	accounts  []*Account
+	store         *StateStore
+	storageMu     contextMutex
+	mu            sync.RWMutex
+	accounts      []*Account
+	blockedEmails map[string]bool
 }
 
 type routingCandidate struct {
@@ -43,6 +45,7 @@ type routingCandidate struct {
 	pressure        float64
 	lastUsed        time.Time
 	mode            routingMode
+	blocked         bool
 }
 
 type routingDecision struct {
@@ -217,7 +220,7 @@ func (p *Pool) route(owners []string, skip map[string]bool) routingDecision {
 		decision.priorOwner = owners[0]
 	}
 	for _, account := range p.all() {
-		decision.candidates = append(decision.candidates, account.routingCandidate())
+		decision.candidates = append(decision.candidates, p.routingCandidate(account))
 	}
 	for _, owner := range owners {
 		for i := range decision.candidates {
@@ -290,6 +293,44 @@ func selectFreshAccount(candidates []routingCandidate, now time.Time, eligible f
 	return best.account
 }
 
+func (p *Pool) routingCandidate(account *Account) routingCandidate {
+	candidate := account.routingCandidate()
+	p.mu.RLock()
+	candidate.blocked = p.blockedEmails[strings.ToLower(strings.TrimSpace(account.email()))]
+	p.mu.RUnlock()
+	return candidate
+}
+
+func (p *Pool) setBlockedEmails(emails []string) ([]string, bool) {
+	blocked := make(map[string]bool, len(emails))
+	for _, email := range emails {
+		blocked[email] = true
+	}
+	p.mu.Lock()
+	changed := !maps.Equal(p.blockedEmails, blocked)
+	var newlyBlocked []string
+	for _, account := range p.accounts {
+		email := strings.ToLower(strings.TrimSpace(account.email()))
+		if blocked[email] && !p.blockedEmails[email] {
+			newlyBlocked = append(newlyBlocked, account.id())
+		}
+	}
+	p.blockedEmails = blocked
+	p.mu.Unlock()
+	return newlyBlocked, changed
+}
+
+func (p *Pool) blockedEmailList() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	emails := make([]string, 0, len(p.blockedEmails))
+	for email := range p.blockedEmails {
+		emails = append(emails, email)
+	}
+	slices.Sort(emails)
+	return emails
+}
+
 func (a *Account) routingCandidate() routingCandidate {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -327,6 +368,9 @@ func (c routingCandidate) available(now time.Time) bool {
 }
 
 func (c routingCandidate) status(now time.Time) accountStatus {
+	if c.blocked {
+		return accountBlocked
+	}
 	if !c.paused && c.reauth == "" && !c.routingEnabled() {
 		return accountNotRouted
 	}
@@ -346,7 +390,7 @@ func (c routingCandidate) status(now time.Time) accountStatus {
 }
 
 func (c routingCandidate) routingEnabled() bool {
-	return routablePlan(c.plan)
+	return !c.blocked && routablePlan(c.plan)
 }
 
 func (c routingCandidate) quotaKnown() bool {

@@ -45,6 +45,16 @@ Paused accounts stay in the pool but receive no routed requests. Existing connec
 
 Routing uses included quota first. When no eligible account with included quota is available, accounts whose weekly quota is exhausted can serve requests using a positive credit balance or unlimited credits. Paused accounts, accounts that need reauthentication, cooldowns, and spend/overage limits are respected. An upstream usage rejection disables that account's credit fallback until its next usage poll. Banked quota resets remain manual.
 
+To exclude accounts by email without removing them, set a persistent routing
+exclusion. Matching ignores letter case, and running servers pick up changes
+within 500 ms. The admin Settings page offers the same control.
+
+```sh
+codex-balancer settings set blocked-emails 'you@example.com,other@example.com'
+codex-balancer settings get blocked-emails
+codex-balancer settings set blocked-emails '' # clear exclusions
+```
+
 Adding an account preserves its existing model training setting.
 Self-serve Business Pro Lite
 (`self_serve_business_prolite`) accounts route using their per-account quota.

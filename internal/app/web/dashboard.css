@@ -55,3 +55,5 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums }
 @media (max-width: 760px) {
   :root { --page-width: min(calc(100% - 1.25rem), 100rem) }
 }
+
+.status-mark.status-blocked { color: var(--amber-11) }

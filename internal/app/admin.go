@@ -34,12 +34,13 @@ type adminKeyView struct {
 }
 
 type dashboardAdminView struct {
-	CSRF     string
-	FastMode fastMode
-	Keys     []adminKeyView
-	Notice   string
-	Error    bool
-	Secret   string
+	CSRF          string
+	FastMode      fastMode
+	BlockedEmails string
+	Keys          []adminKeyView
+	Notice        string
+	Error         bool
+	Secret        string
 }
 
 type dashboardAdminControl struct {
@@ -73,6 +74,7 @@ func (s *server) adminRoutes() http.Handler {
 	mux.HandleFunc("POST /admin/login", s.adminLogin)
 	mux.HandleFunc("POST /admin/logout", s.requireAdmin(s.adminLogout))
 	mux.HandleFunc("POST /admin/settings", s.requireAdmin(s.adminSettings))
+	mux.HandleFunc("POST /admin/settings/blocked-emails", s.requireAdmin(s.adminBlockedEmails))
 	mux.HandleFunc("POST /admin/accounts/{action}", s.requireAdmin(s.adminAccountAction))
 	mux.HandleFunc("POST /admin/keys/{action}", s.requireAdmin(s.adminKeyAction))
 	mux.HandleFunc("GET /admin/events", s.requireAdmin(s.adminEvents))
@@ -220,7 +222,7 @@ func pluralSuffix(value int) string {
 func (s *server) adminDashboard(now time.Time, session adminSession, keys []adminKeyView) dashboardView {
 	view := s.dashboardAt(now, true)
 	mode, _ := s.fastMode.snapshot()
-	view.Admin = &dashboardAdminView{CSRF: session.csrf, FastMode: mode, Keys: keys}
+	view.Admin = &dashboardAdminView{CSRF: session.csrf, FastMode: mode, BlockedEmails: strings.Join(s.pool.blockedEmailList(), "\n"), Keys: keys}
 	return view
 }
 
@@ -308,6 +310,20 @@ func (s *server) adminSettings(w http.ResponseWriter, r *http.Request, session a
 	}
 	s.stats.note("fast mode changed", "", mode.label())
 	s.renderAdmin(w, r, session, "Saved. Fast mode: "+mode.label()+".", "", http.StatusOK)
+}
+
+func (s *server) adminBlockedEmails(w http.ResponseWriter, r *http.Request, session adminSession) {
+	value := r.PostForm.Get("blocked-emails")
+	if _, err := parseBlockedEmails(value); err != nil {
+		s.renderAdmin(w, r, session, err.Error(), "", http.StatusUnprocessableEntity)
+		return
+	}
+	if err := s.saveBlockedEmails(value); err != nil {
+		s.adminError(w, r, err)
+		return
+	}
+	s.stats.note("blocked emails changed", "", "Routing exclusions updated.")
+	s.renderAdmin(w, r, session, "Saved blocked emails.", "", http.StatusOK)
 }
 
 func (s *server) adminAccountAction(w http.ResponseWriter, r *http.Request, session adminSession) {

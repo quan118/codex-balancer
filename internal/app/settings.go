@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/mail"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -108,6 +111,66 @@ func (s *server) reloadSettings() error {
 	}
 	if s.fastMode.set(mode) {
 		s.log.Info("fast mode applied; restarting existing websockets", "fast_mode", mode)
+	}
+	value, err = s.pool.store.raw.BlockedEmails()
+	if err != nil {
+		return err
+	}
+	var emails []string
+	if err := json.Unmarshal([]byte(value), &emails); err != nil {
+		return fmt.Errorf("decode blocked emails: %w", err)
+	}
+	newlyBlocked, changed := s.pool.setBlockedEmails(emails)
+	for _, id := range newlyBlocked {
+		s.invalidateAccount(id, routingReasonOwnerBlocked)
+	}
+	if changed && s.catalog != nil {
+		s.catalog.invalidate()
+	}
+	return nil
+}
+
+func parseBlockedEmails(value string) ([]string, error) {
+	emails := []string{}
+	seen := map[string]bool{}
+	for _, raw := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '\n' }) {
+		email := strings.ToLower(strings.TrimSpace(raw))
+		if email == "" {
+			continue
+		}
+		address, err := mail.ParseAddress(email)
+		if err != nil || address.Address != email || strings.ContainsAny(email, " \t\r") {
+			return nil, fmt.Errorf("invalid account email %q", raw)
+		}
+		if !seen[email] {
+			seen[email] = true
+			emails = append(emails, email)
+		}
+	}
+	slices.Sort(emails)
+	return emails, nil
+}
+
+func (s *server) saveBlockedEmails(value string) error {
+	emails, err := parseBlockedEmails(value)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(emails)
+	if err != nil {
+		return err
+	}
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	if err := s.pool.store.raw.SetBlockedEmails(string(encoded)); err != nil {
+		return err
+	}
+	newlyBlocked, changed := s.pool.setBlockedEmails(emails)
+	for _, id := range newlyBlocked {
+		s.invalidateAccount(id, routingReasonOwnerBlocked)
+	}
+	if changed && s.catalog != nil {
+		s.catalog.invalidate()
 	}
 	return nil
 }

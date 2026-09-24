@@ -6,17 +6,21 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 )
 
 const settingsHelp = `Manage global settings.
 
 Usage:
   codex-balancer settings set fast-mode <default|on|off>
+  codex-balancer settings set blocked-emails <email[,email...]|"">
   codex-balancer settings get fast-mode
+  codex-balancer settings get blocked-emails
   codex-balancer settings list [-json]
 
 Fast mode: default respects the client; on forces fast; off forces standard.
-Changes restart existing WebSockets when a running server applies them.
+Blocked emails exclude matching accounts from routing (case-insensitive). Empty clears the list.
+Fast mode changes restart existing WebSockets. Blocking an email closes that account's connections.
 
 Flags (place before the setting name):
   -state string  state database (default %s)
@@ -42,12 +46,15 @@ func settingsCmd(args []string) error {
 	}
 	switch args[0] {
 	case "set":
-		if fs.NArg() != 2 || fs.Arg(0) != "fast-mode" || !fastMode(fs.Arg(1)).valid() || *asJSON {
-			return errors.New("usage: settings set [-state path] fast-mode <default|on|off>")
+		if fs.NArg() != 2 || *asJSON {
+			return errors.New("usage: settings set [-state path] <fast-mode|blocked-emails> <value>")
+		}
+		if fs.Arg(0) != "blocked-emails" && (fs.Arg(0) != "fast-mode" || !fastMode(fs.Arg(1)).valid()) {
+			return errors.New("usage: settings set [-state path] <fast-mode|blocked-emails> <value>")
 		}
 	case "get":
-		if fs.NArg() != 1 || fs.Arg(0) != "fast-mode" {
-			return errors.New("usage: settings get [-json] [-state path] fast-mode")
+		if fs.NArg() != 1 || (fs.Arg(0) != "fast-mode" && fs.Arg(0) != "blocked-emails") {
+			return errors.New("usage: settings get [-json] [-state path] <fast-mode|blocked-emails>")
 		}
 	case "list":
 		if fs.NArg() != 0 {
@@ -62,23 +69,55 @@ func settingsCmd(args []string) error {
 	}
 	defer store.Close()
 	if args[0] == "set" {
-		if err := store.raw.SetFastMode(fs.Arg(1)); err != nil {
-			return err
+		if fs.Arg(0) == "fast-mode" {
+			if err := store.raw.SetFastMode(fs.Arg(1)); err != nil {
+				return err
+			}
+			fmt.Printf("Saved fast-mode=%s. Running servers apply changes on their next settings poll (500 ms).\n", fs.Arg(1))
+		} else {
+			emails, err := parseBlockedEmails(fs.Arg(1))
+			if err != nil {
+				return err
+			}
+			encoded, err := json.Marshal(emails)
+			if err != nil {
+				return err
+			}
+			if err := store.raw.SetBlockedEmails(string(encoded)); err != nil {
+				return err
+			}
+			fmt.Printf("Saved blocked-emails=%s. Running servers apply changes on their next settings poll (500 ms).\n", strings.Join(emails, ","))
 		}
-		fmt.Printf("Saved fast-mode=%s. Running servers apply changes on their next settings poll (500 ms).\n", fs.Arg(1))
 		return nil
 	}
 	mode, err := store.raw.FastMode()
 	if err != nil {
 		return err
 	}
+	blocked, err := store.raw.BlockedEmails()
+	if err != nil {
+		return err
+	}
+	var emails []string
+	if err := json.Unmarshal([]byte(blocked), &emails); err != nil {
+		return err
+	}
 	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"fast-mode": mode})
+		values := map[string]any{"fast-mode": mode, "blocked-emails": emails}
+		if args[0] == "get" {
+			values = map[string]any{fs.Arg(0): values[fs.Arg(0)]}
+		}
+		return json.NewEncoder(os.Stdout).Encode(values)
 	}
 	if args[0] == "get" {
-		fmt.Println(mode)
+		if fs.Arg(0) == "fast-mode" {
+			fmt.Println(mode)
+		} else {
+			fmt.Println(strings.Join(emails, ","))
+		}
 	} else {
 		fmt.Printf("fast-mode\t%s\n", mode)
+		fmt.Printf("blocked-emails\t%s\n", strings.Join(emails, ","))
 	}
 	return nil
 }
